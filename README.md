@@ -36,6 +36,7 @@ pollenbees/
     labels/
   runs/
     baseline/                  # Training outputs and checkpoints
+    results/                   # Per-epoch CSV metrics for model comparison
 ```
 
 ## Dataset Layout
@@ -70,6 +71,8 @@ The dataset is heavily imbalanced. Pollenbee is roughly 3 percent of the labeled
 ## Model
 
 The model is defined in `yolov8_model.py`.
+
+![YOLOv8 architecture overview](val/YOLOV8.png)
 
 Key components:
 
@@ -123,8 +126,9 @@ The script will:
 2. Convert Labelme JSON annotations to YOLO labels if needed.
 3. Build train and validation datasets.
 4. Train the custom YOLOv8-style model.
-5. Evaluate validation mAP.
-6. Save the best checkpoint to:
+5. Evaluate validation metrics after each epoch.
+6. Append one metrics row per epoch to `runs/results/`.
+7. Save the best checkpoint to:
 
 ```text
 runs/baseline/best.pt
@@ -134,6 +138,25 @@ Training history is saved to:
 
 ```text
 runs/baseline/history.json
+```
+
+Per-epoch comparison metrics are saved as:
+
+```text
+runs/results/custom_yolov8s_baseline_<run_id>.csv
+```
+
+For model comparisons, set a model name before training:
+
+```powershell
+$env:POLLENBEES_MODEL_NAME = "my_model_variant"
+python phase1_pipeline_v2.py
+```
+
+This produces:
+
+```text
+runs/results/my_model_variant_<run_id>.csv
 ```
 
 ## Evaluation
@@ -147,16 +170,46 @@ AP@0.50 [nonpollenbee]
 AP@0.50 [pollenbee]
 AP@0.50:0.95 [nonpollenbee]
 AP@0.50:0.95 [pollenbee]
+precision/recall/F1 [nonpollenbee]
+precision/recall/F1 [pollenbee]
 ```
 
 The per-class values matter most for this dataset. A high `nonpollenbee` AP with `pollenbee` AP near zero means the model has learned the majority class but is failing on the minority class.
+
+The CSV file contains:
+
+```text
+run_id
+model_name
+epoch
+lr
+train_loss
+map_50
+map_50_95
+stats_conf_thr
+stats_iou_thr
+nonpollenbee_precision
+nonpollenbee_recall
+nonpollenbee_f1
+nonpollenbee_tp
+nonpollenbee_fp
+nonpollenbee_fn
+pollenbee_precision
+pollenbee_recall
+pollenbee_f1
+pollenbee_tp
+pollenbee_fp
+pollenbee_fn
+```
+
+AP is computed from ranked low-threshold detections. Precision, recall, and F1 are computed from fixed-threshold detections using `stats_conf_thr = 0.25` and `stats_iou_thr = 0.50` by default.
 
 The current pipeline includes:
 
 - Low-threshold ranked detections for AP calculation
 - Class-wise NMS
 - Real `mAP@0.50:0.95` IoU sweep
-- Positive class weighting for `pollenbee` in `utils/args.yaml`
+- Varifocal classification loss with smaller positive class weighting for `pollenbee`
 - A widened classification head in `yolov8_model.py`
 
 Because the model architecture was updated, old checkpoints in `runs/baseline/` should be treated as outdated. Retrain from scratch after these changes.
@@ -187,15 +240,19 @@ Loss and class weighting are configured in:
 utils/args.yaml
 ```
 
-Current classification positive weights:
+Current classification loss setup:
 
 ```yaml
+cls_loss_type: vfl
+vfl_alpha: 0.75
+vfl_gamma: 2.0
+vfl_iou_weighted: true
 cls_pos_weight:
   - 1.0
-  - 16.0
+  - 4.0
 ```
 
-This gives the rare `pollenbee` class more influence during classification loss without using the full raw imbalance ratio.
+This uses Varifocal Loss for class prediction and gives positive `pollenbee` targets a smaller extra weight than the earlier BCE experiment. The `4.0` weight is intentionally conservative so the model is encouraged to learn pollenbee without immediately producing many false pollenbee detections.
 
 Main training hyperparameters are currently defined in `phase1_pipeline_v2.py`, including:
 
@@ -232,4 +289,3 @@ python -m pip install -r requirements-cuda.txt
 ### Label conversion is skipped
 
 This is expected when `labels/` already exists and contains the same number of files as the JSON annotation folder. Delete the split's `labels/` folder only if annotations changed and labels must be regenerated.
-
