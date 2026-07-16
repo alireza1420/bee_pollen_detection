@@ -1,0 +1,20 @@
+.venv/
+.tmp/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+runs/
+sanity_check_result.jpg
+
+# Datasets — large, keep out of git (val/YOLOV8.png stays tracked)
+/train/
+/test/
+/val/images/
+/val/labels/
+/val/annotations_only_non_and_pollenbee_fixed_final/
+*.zip
+
+# Reference material / editor
+/articles/
+.vscode/

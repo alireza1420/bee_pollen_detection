@@ -1,0 +1,33 @@
+nc: 2
+names:
+  0: nonpollenbee
+  1: pollenbee
+
+min_lr: 0.000100000000
+max_lr: 0.010000000000
+momentum: 0.9370000000
+weight_decay: 0.000500
+warmup_epochs: 3.00000
+
+box: 7.500000000000000
+cls: 0.500000000000000
+dfl: 1.500000000000000
+cls_loss_type: vfl
+vfl_alpha: 0.75
+vfl_gamma: 2.0
+vfl_iou_weighted: true
+cls_pos_weight:
+  - 1.0
+  - 4.0
+
+hsv_h: 0.0150000000000
+hsv_s: 0.7000000000000
+hsv_v: 0.4000000000000
+degrees: 0.00000000000
+translate: 0.100000000
+scale: 0.5000000000000
+shear: 0.0000000000000
+flip_ud: 0.00000000000
+flip_lr: 0.50000000000
+mosaic: 1.000000000000
+mix_up: 0.000000000000
