@@ -110,6 +110,51 @@ class SPPF(nn.Module):
         return self.conv2(torch.cat([x, y1, y2, y3], dim=1))
 
 
+class ChannelAttention(nn.Module):
+    def __init__(self, channels, ratio=8):
+        super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        hidden = max(channels // ratio, 1)
+        self.mlp = nn.Sequential(
+            nn.Linear(channels, hidden, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, channels, bias=False),
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = self.mlp(self.avg_pool(x).squeeze(-1).squeeze(-1))
+        mx = self.mlp(self.max_pool(x).squeeze(-1).squeeze(-1))
+        weight = self.sigmoid(avg + mx).unsqueeze(-1).unsqueeze(-1)
+        return x * weight
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = torch.mean(x, dim=1, keepdim=True)
+        mx, _ = torch.max(x, dim=1, keepdim=True)
+        weight = self.sigmoid(self.conv(torch.cat([avg, mx], dim=1)))
+        return x * weight
+
+
+class CBAM(nn.Module):
+    """Convolutional Block Attention Module: channel attention then spatial."""
+
+    def __init__(self, channels, ratio=8, kernel_size=7):
+        super().__init__()
+        self.channel_attention = ChannelAttention(channels, ratio)
+        self.spatial_attention = SpatialAttention(kernel_size)
+
+    def forward(self, x):
+        return self.spatial_attention(self.channel_attention(x))
+
+
 class Backbone(nn.Module):
     def __init__(self, version, in_channels=3, shortcut=True):
         super().__init__()
@@ -125,6 +170,13 @@ class Backbone(nn.Module):
         self.c2f_4 = C2f(int(256 * w), int(256 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
         self.c2f_6 = C2f(int(512 * w), int(512 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
         self.c2f_8 = C2f(int(512 * w * r), int(512 * w * r), num_bottlenecks=int(3 * d), shortcut=shortcut)
+
+        # CBAM on the three feature maps that feed the neck — channels match
+        # each C2f's output. Shape-preserving, so the neck/head are unchanged.
+        self.cbam_4 = CBAM(int(256 * w))
+        self.cbam_6 = CBAM(int(512 * w))
+        self.cbam_8 = CBAM(int(512 * w * r))
+
         self.sppf = SPPF(int(512 * w * r), int(512 * w * r))
 
     def forward(self, x):
@@ -132,11 +184,11 @@ class Backbone(nn.Module):
         x = self.conv_1(x)
         x = self.c2f_2(x)
         x = self.conv_3(x)
-        out1 = self.c2f_4(x)
+        out1 = self.cbam_4(self.c2f_4(x))
         x = self.conv_5(out1)
-        out2 = self.c2f_6(x)
+        out2 = self.cbam_6(self.c2f_6(x))
         x = self.conv_7(out2)
-        x = self.c2f_8(x)
+        x = self.cbam_8(self.c2f_8(x))
         out3 = self.sppf(x)
         return out1, out2, out3
 
