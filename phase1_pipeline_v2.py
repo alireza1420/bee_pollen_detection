@@ -23,7 +23,8 @@ What this file does, in order:
   6. main() — ties everything together with logging and checkpointing
 """
 
-import os, json, glob, random, logging
+import os, json, glob, random, logging, csv
+from datetime import datetime
 from pathlib import Path
 
 import cv2
@@ -457,6 +458,101 @@ def build_gt(targets, batch_size, img_size):
     return gt
 
 
+def box_iou_xyxy(boxes1, boxes2):
+    """Pairwise IoU for xyxy boxes."""
+    if boxes1.numel() == 0 or boxes2.numel() == 0:
+        return boxes1.new_zeros((boxes1.shape[0], boxes2.shape[0]))
+
+    area1 = (boxes1[:, 2] - boxes1[:, 0]).clamp(min=0) * (boxes1[:, 3] - boxes1[:, 1]).clamp(min=0)
+    area2 = (boxes2[:, 2] - boxes2[:, 0]).clamp(min=0) * (boxes2[:, 3] - boxes2[:, 1]).clamp(min=0)
+
+    lt = torch.maximum(boxes1[:, None, :2], boxes2[:, :2])
+    rb = torch.minimum(boxes1[:, None, 2:], boxes2[:, 2:])
+    wh = (rb - lt).clamp(min=0)
+
+    inter = wh[:, :, 0] * wh[:, :, 1]
+    union = area1[:, None] + area2 - inter
+    return inter / union.clamp(min=1e-9)
+
+
+def init_class_stats():
+    return {cls_id: {'tp': 0, 'fp': 0, 'fn': 0} for cls_id in CLASS_NAMES}
+
+
+def update_class_stats(stats, preds, gt, iou_thr=0.50):
+    """
+    Greedy one-to-one matching for class-level precision/recall/F1.
+    Predictions are matched to ground truth of the same class only.
+    """
+    for pred, target in zip(preds, gt):
+        for cls_id in CLASS_NAMES:
+            pred_mask = pred['labels'] == cls_id
+            gt_mask = target['labels'] == cls_id
+
+            pred_boxes = pred['boxes'][pred_mask]
+            pred_scores = pred['scores'][pred_mask]
+            gt_boxes = target['boxes'][gt_mask]
+
+            if pred_boxes.numel() == 0:
+                stats[cls_id]['fn'] += int(gt_boxes.shape[0])
+                continue
+            if gt_boxes.numel() == 0:
+                stats[cls_id]['fp'] += int(pred_boxes.shape[0])
+                continue
+
+            order = pred_scores.argsort(descending=True)
+            ious = box_iou_xyxy(pred_boxes, gt_boxes)
+            matched_gt = torch.zeros(gt_boxes.shape[0], dtype=torch.bool, device=gt_boxes.device)
+
+            for pred_idx in order:
+                best_iou, best_gt_idx = ious[pred_idx].max(dim=0)
+                if best_iou >= iou_thr and not matched_gt[best_gt_idx]:
+                    stats[cls_id]['tp'] += 1
+                    matched_gt[best_gt_idx] = True
+                else:
+                    stats[cls_id]['fp'] += 1
+
+            stats[cls_id]['fn'] += int((~matched_gt).sum().item())
+
+
+def _pr_f1(tp, fp, fn):
+    """Precision/recall/F1 from raw counts — shared by per-class and overall."""
+    precision = tp / max(tp + fp, 1)
+    recall = tp / max(tp + fn, 1)
+    f1 = 2 * precision * recall / max(precision + recall, 1e-12)
+    return precision, recall, f1
+
+
+def finalize_class_stats(stats):
+    final = {}
+    for cls_id, counts in stats.items():
+        tp, fp, fn = counts['tp'], counts['fp'], counts['fn']
+        precision, recall, f1 = _pr_f1(tp, fp, fn)
+        final[cls_id] = {
+            'tp': tp,
+            'fp': fp,
+            'fn': fn,
+            'precision': precision,
+            'recall': recall,
+            'f1': f1,
+        }
+    return final
+
+
+def compute_overall_stats(class_stats):
+    """
+    Micro-averaged precision/recall/F1 across all classes: pool TP/FP/FN over
+    every class, then compute the three metrics once. This is the dataset-level
+    number (not per-class) — dominated by nonpollenbee since it's the majority.
+    """
+    tp = sum(c['tp'] for c in class_stats.values())
+    fp = sum(c['fp'] for c in class_stats.values())
+    fn = sum(c['fn'] for c in class_stats.values())
+    precision, recall, f1 = _pr_f1(tp, fp, fn)
+    return {'tp': tp, 'fp': fp, 'fn': fn,
+            'precision': precision, 'recall': recall, 'f1': f1}
+
+
 def _per_class_result(res, key='map_per_class', classes_key='classes'):
     values = res[key]
     if values.ndim == 0:
@@ -476,7 +572,87 @@ def _per_class_result(res, key='map_per_class', classes_key='classes'):
     return classes, values
 
 
-def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70):
+def metric_to_float(value):
+    if isinstance(value, torch.Tensor):
+        return float(value.detach().cpu().item())
+    return float(value)
+
+
+def metrics_csv_fields():
+    fields = [
+        'run_id',
+        'model_name',
+        'epoch',
+        'lr',
+        'train_loss',
+        'map_50',
+        'map_50_95',
+        'stats_conf_thr',
+        'stats_iou_thr',
+        'overall_precision',
+        'overall_recall',
+        'overall_f1',
+        'overall_tp',
+        'overall_fp',
+        'overall_fn',
+    ]
+    for cls_id in sorted(CLASS_NAMES):
+        name = CLASS_NAMES[cls_id]
+        fields.extend([
+            f'{name}_precision',
+            f'{name}_recall',
+            f'{name}_f1',
+            f'{name}_tp',
+            f'{name}_fp',
+            f'{name}_fn',
+        ])
+    return fields
+
+
+def build_metrics_row(run_id, model_name, epoch, lr, train_loss, eval_res, stats_conf_thr, stats_iou_thr):
+    row = {
+        'run_id': run_id,
+        'model_name': model_name,
+        'epoch': epoch,
+        'lr': lr,
+        'train_loss': train_loss,
+        'map_50': metric_to_float(eval_res['map_50']),
+        'map_50_95': metric_to_float(eval_res['map']),
+        'stats_conf_thr': stats_conf_thr,
+        'stats_iou_thr': stats_iou_thr,
+    }
+
+    overall = eval_res['overall_stats']
+    row['overall_precision'] = overall['precision']
+    row['overall_recall'] = overall['recall']
+    row['overall_f1'] = overall['f1']
+    row['overall_tp'] = overall['tp']
+    row['overall_fp'] = overall['fp']
+    row['overall_fn'] = overall['fn']
+
+    for cls_id in sorted(CLASS_NAMES):
+        name = CLASS_NAMES[cls_id]
+        cls_stats = eval_res['class_stats'][cls_id]
+        row[f'{name}_precision'] = cls_stats['precision']
+        row[f'{name}_recall'] = cls_stats['recall']
+        row[f'{name}_f1'] = cls_stats['f1']
+        row[f'{name}_tp'] = cls_stats['tp']
+        row[f'{name}_fp'] = cls_stats['fp']
+        row[f'{name}_fn'] = cls_stats['fn']
+
+    return row
+
+
+def append_metrics_csv(csv_path, row, fieldnames):
+    file_exists = os.path.exists(csv_path)
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
+
+def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70, stats_conf_thr=0.25, stats_iou_thr=0.50):
     """
     Evaluate on a data split.  Returns a dict containing at minimum:
         map_50   — mAP at IoU=0.50  (primary metric for the paper)
@@ -488,19 +664,23 @@ def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70):
         raise ImportError('Run: pip install torchmetrics')
 
     model.eval()
+    # NOTE: do NOT override max_detection_thresholds. torchmetrics only computes
+    # the summary `map` (mAP@0.50:0.95) when 100 is one of the thresholds; passing
+    # [1, 10, 300] silently returns map = -1. The default [1, 10, 100] is COCO-
+    # standard and the densest image here has 84 boxes, so the 100 cap loses nothing.
     metric = MeanAveragePrecision(
         iou_thresholds=[x / 100 for x in range(50, 100, 5)],
-        max_detection_thresholds=[1, 10, 300],
         class_metrics=True,
     )
     metric50 = MeanAveragePrecision(
         iou_thresholds=[0.5],
-        max_detection_thresholds=[1, 10, 300],
         class_metrics=True,
     )
     for m in (metric, metric50):
         if hasattr(m, 'warn_on_many_detections'):
             m.warn_on_many_detections = False
+
+    class_stats = init_class_stats()
 
     with torch.no_grad():
         for imgs, targets in loader:
@@ -512,12 +692,14 @@ def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70):
             raw = model(imgs)                             # (B, 4+nc, anchors)
             preds_per_img = [raw[i] for i in range(imgs.shape[0])]
             nms_out       = non_max_suppression(preds_per_img, conf_thr, iou_thr)
+            stats_out     = non_max_suppression(preds_per_img, stats_conf_thr, iou_thr)
             gt            = build_gt(targets, imgs.shape[0], img_size)
 
             preds_cpu = [{k: v.cpu() for k, v in p.items()} for p in nms_out]
             gt_cpu = [{k: v.cpu() for k, v in g.items()} for g in gt]
             metric.update(preds_cpu, gt_cpu)
             metric50.update(preds_cpu, gt_cpu)
+            update_class_stats(class_stats, stats_out, gt, iou_thr=stats_iou_thr)
 
     res = metric.compute()
     res50 = metric50.compute()
@@ -525,6 +707,8 @@ def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70):
     classes, map_per_class = _per_class_result(res)
     res['map_50_per_class'] = map50_per_class
     res['classes_50'] = classes50
+    res['class_stats'] = finalize_class_stats(class_stats)
+    res['overall_stats'] = compute_overall_stats(res['class_stats'])
 
     log.info(f'  mAP@0.50      : {res["map_50"]:.4f}')
     log.info(f'  mAP@0.50:0.95 : {res["map"]:.4f}')
@@ -532,6 +716,20 @@ def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70):
         log.info(f'  AP@0.50 [{CLASS_NAMES.get(cid, cid)}]: {ap:.4f}')
     for cid, ap in zip(classes.tolist(), map_per_class):
         log.info(f'  AP@0.50:0.95 [{CLASS_NAMES.get(cid, cid)}]: {ap:.4f}')
+    for cls_id, cls_stats in res['class_stats'].items():
+        log.info(
+            f'  Stats@conf{stats_conf_thr:.3f}/IoU{stats_iou_thr:.2f} '
+            f'[{CLASS_NAMES.get(cls_id, cls_id)}]: '
+            f'precision={cls_stats["precision"]:.4f}  '
+            f'recall={cls_stats["recall"]:.4f}  '
+            f'F1={cls_stats["f1"]:.4f}'
+        )
+    ov = res['overall_stats']
+    log.info(
+        f'  Stats@conf{stats_conf_thr:.3f}/IoU{stats_iou_thr:.2f} '
+        f'[overall]: precision={ov["precision"]:.4f}  '
+        f'recall={ov["recall"]:.4f}  F1={ov["f1"]:.4f}'
+    )
     return res
 
 
@@ -549,12 +747,19 @@ def main():
     # ── Hyperparameters (standard YOLOv8 defaults — cite the original paper)
     IMG_SIZE     = 640
     BATCH_SIZE   = 16
-    NUM_EPOCHS   = 100
+    NUM_EPOCHS   = int(os.environ.get('POLLENBEES_EPOCHS', 100))
     LR           = 0.01          # initial learning rate
     MOMENTUM     = 0.937
     WEIGHT_DECAY = 5e-4
     SEED         = 42
+    MODEL_NAME   = os.environ.get('POLLENBEES_MODEL_NAME', 'custom_yolov8s_baseline')
+    RUN_ID       = os.environ.get('POLLENBEES_RUN_ID', datetime.now().strftime('%Y%m%d_%H%M%S'))
+    EVAL_EVERY   = 1
+    STATS_CONF_THR = 0.25
+    STATS_IOU_THR  = 0.50
     SAVE_DIR     = os.path.join(DATASET_ROOT, 'runs', 'baseline')
+    RESULTS_DIR  = os.path.join(DATASET_ROOT, 'runs', 'results')
+    RESULTS_CSV  = os.path.join(RESULTS_DIR, f'{MODEL_NAME}_{RUN_ID}.csv')
     DEVICE       = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # ── Reproducibility ───────────────────────────────────────────────────
@@ -562,9 +767,14 @@ def main():
     random.seed(SEED)
     np.random.seed(SEED)
     os.makedirs(SAVE_DIR, exist_ok=True)
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    metric_fields = metrics_csv_fields()
 
     log.info(f'Device: {DEVICE}')
     log.info(f'Dataset root: {DATASET_ROOT}')
+    log.info(f'Model name: {MODEL_NAME}')
+    log.info(f'Run ID: {RUN_ID}')
+    log.info(f'Metrics CSV: {RESULTS_CSV}')
 
     # ── Step 1: Convert annotations (skipped automatically if already done)
     for split_root in [TRAIN_ROOT, VAL_ROOT, TEST_ROOT]:
@@ -612,8 +822,13 @@ def main():
     )
 
     # ── Step 5: Train ────────────────────────────────────────────────────
-    history    = {'train_loss': [], 'val_map50': []}
-    best_map50 = 0.0
+    # Select best.pt by pollenbee F1, not overall mAP@0.50. Pollenbee is the
+    # ~3% minority class that matters for this dataset; picking on mAP@0.50
+    # rewards the majority class and can save a checkpoint that barely detects
+    # pollenbee (as happened in the earlier run — best mAP epoch had pollenbee F1 ~0.5).
+    POLLENBEE_ID = CLASS_MAP['pollenbee']
+    history        = {'train_loss': [], 'val_metrics': []}
+    best_pollen_f1 = -1.0
 
     for epoch in range(1, NUM_EPOCHS + 1):
         current_lr = scheduler.get_last_lr()[0]
@@ -625,27 +840,43 @@ def main():
         history['train_loss'].append(train_loss)
         log.info(f'Epoch {epoch} avg train loss: {train_loss:.4f}')
 
-        # Evaluate every 5 epochs and at the final epoch.
-        # mAP is expensive to compute — don't do it every epoch.
-        if epoch % 5 == 0 or epoch == NUM_EPOCHS:
+        # Evaluate every epoch so each model run has a complete metrics CSV.
+        if epoch % EVAL_EVERY == 0 or epoch == NUM_EPOCHS:
             log.info('--- Validation ---')
-            res   = evaluate(model, val_loader, DEVICE, img_size=IMG_SIZE)
-            map50 = res['map_50'].item()
-            history['val_map50'].append({'epoch': epoch, 'map50': map50})
+            res = evaluate(
+                model, val_loader, DEVICE, img_size=IMG_SIZE,
+                stats_conf_thr=STATS_CONF_THR, stats_iou_thr=STATS_IOU_THR,
+            )
+            map50 = metric_to_float(res['map_50'])
+            pollen_f1 = res['class_stats'][POLLENBEE_ID]['f1']
+            metrics_row = build_metrics_row(
+                RUN_ID, MODEL_NAME, epoch, current_lr, train_loss,
+                res, STATS_CONF_THR, STATS_IOU_THR,
+            )
+            append_metrics_csv(RESULTS_CSV, metrics_row, metric_fields)
+            history['val_metrics'].append(metrics_row)
+            log.info(f'Epoch {epoch} metrics appended → {RESULTS_CSV}')
 
-            if map50 > best_map50:
-                best_map50 = map50
+            if pollen_f1 > best_pollen_f1:
+                best_pollen_f1 = pollen_f1
                 ckpt = os.path.join(SAVE_DIR, 'best.pt')
                 torch.save({
-                    'epoch':      epoch,
-                    'model':      model.state_dict(),
-                    'optimizer':  optimizer.state_dict(),
-                    'map50':      map50,
-                    'config':     {'version': 's', 'img_size': IMG_SIZE, 'num_classes': 2},
+                    'epoch':        epoch,
+                    'model':        model.state_dict(),
+                    'optimizer':    optimizer.state_dict(),
+                    'map50':        map50,
+                    'pollenbee_f1': pollen_f1,
+                    'config': {
+                        'model_name': MODEL_NAME,
+                        'run_id': RUN_ID,
+                        'version': 's',
+                        'img_size': IMG_SIZE,
+                        'num_classes': 2,
+                    },
                 }, ckpt)
-                log.info(f'New best saved → {ckpt}  (mAP@0.50={map50:.4f})')
+                log.info(f'New best saved → {ckpt}  (pollenbee F1={pollen_f1:.4f}, mAP@0.50={map50:.4f})')
 
-    log.info(f'Training complete.  Best mAP@0.50: {best_map50:.4f}')
+    log.info(f'Training complete.  Best pollenbee F1: {best_pollen_f1:.4f}')
 
     import json as _json
     with open(os.path.join(SAVE_DIR, 'history.json'), 'w') as f:
