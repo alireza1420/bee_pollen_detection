@@ -12,6 +12,16 @@ warmup_epochs: 3.00000
 box: 7.500000000000000
 cls: 0.500000000000000
 dfl: 1.500000000000000
+
+# Box regression loss: ciou | saf_siou
+box_loss_type: saf_siou
+saf_theta: 4          # Omega exponent in the SIoU shape cost
+saf_C: 12.8           # NWD scale, input-scale pixels
+saf_T: 32.0           # size-gate threshold, input-scale pixels
+saf_alpha_f: 1.9      # WIoU-v3 focusing base
+saf_delta: 3.0        # WIoU-v3 focusing delta
+saf_momentum: 0.999   # running-mean momentum for L_reg
+
 cls_loss_type: vfl
 vfl_alpha: 0.75
 vfl_gamma: 2.0

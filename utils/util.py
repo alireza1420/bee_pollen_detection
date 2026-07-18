@@ -276,6 +276,57 @@ def compute_iou(box1, box2, eps=1e-7):
     return iou - (rho2 / c2 + v * alpha)  # CIoU
 
 
+def saf_siou_reg(pred_xyxy, gt_xyxy, C, T, theta=4.0, eps=1e-7):
+    """
+    SAF-SIoU regression cost (before WIoU focusing / per-anchor weighting).
+
+    Boxes are xyxy in INPUT-SCALE PIXELS (caller must convert from grid units),
+    because C and T are pixel-unit hyperparameters. Returns L_reg of shape [N, 1].
+
+    L_reg = (1 - lam) * L_siou + lam * (1 - NWD),  lam = exp(-sqrt(w_g*h_g)/T)
+    """
+    p_x1, p_y1, p_x2, p_y2 = pred_xyxy.chunk(4, -1)
+    g_x1, g_y1, g_x2, g_y2 = gt_xyxy.chunk(4, -1)
+
+    w_p = (p_x2 - p_x1).clamp(min=0)
+    h_p = (p_y2 - p_y1).clamp(min=0)
+    w_g = (g_x2 - g_x1).clamp(min=0)
+    h_g = (g_y2 - g_y1).clamp(min=0)
+    x_p, y_p = (p_x1 + p_x2) / 2, (p_y1 + p_y2) / 2
+    x_g, y_g = (g_x1 + g_x2) / 2, (g_y1 + g_y2) / 2
+
+    # IoU (scale-invariant, computed here to keep this self-contained)
+    inter = (p_x2.minimum(g_x2) - p_x1.maximum(g_x1)).clamp(0) * \
+            (p_y2.minimum(g_y2) - p_y1.maximum(g_y1)).clamp(0)
+    union = w_p * h_p + w_g * h_g - inter + eps
+    iou = inter / union
+
+    dx, dy = x_p - x_g, y_p - y_g
+    sigma = torch.sqrt(dx * dx + dy * dy + eps)
+
+    # enclosing box
+    c_w = p_x2.maximum(g_x2) - p_x1.minimum(g_x1)
+    c_h = p_y2.maximum(g_y2) - p_y1.minimum(g_y1)
+
+    # (1) corrected SIoU
+    sin_alpha = (dy.abs() / (sigma + eps)).clamp(0, 1)
+    lam_angle = torch.sin(2 * torch.arcsin(sin_alpha))
+    D = (1 - torch.exp(-(2 - lam_angle) * (dx / (c_w + eps)) ** 2)) + \
+        (1 - torch.exp(-(2 - lam_angle) * (dy / (c_h + eps)) ** 2))
+    om_w = (w_p - w_g).abs() / (torch.maximum(w_p, w_g) + eps)
+    om_h = (h_p - h_g).abs() / (torch.maximum(h_p, h_g) + eps)
+    omega = (1 - torch.exp(-om_w)) ** theta + (1 - torch.exp(-om_h)) ** theta
+    l_siou = 1 - iou + (D + omega) / 2
+
+    # (2) NWD (boxes as Gaussians)
+    w2sq = dx * dx + dy * dy + 0.25 * ((w_p - w_g) ** 2 + (h_p - h_g) ** 2)
+    nwd = torch.exp(-torch.sqrt(w2sq + eps) / C)
+
+    # (3) size gate + blend
+    lam = torch.exp(-torch.sqrt((w_g * h_g).clamp(min=0) + eps) / T)
+    return (1 - lam) * l_siou + lam * (1 - nwd)
+
+
 def strip_optimizer(filename):
     x = torch.load(filename, map_location="cpu")
     x['model'].half()  # to FP16
@@ -557,15 +608,52 @@ class VFL(torch.nn.Module):
 
 
 class BoxLoss(torch.nn.Module):
-    def __init__(self, dfl_ch):
+    def __init__(self, dfl_ch, box_loss_type='ciou', saf_theta=4.0, saf_C=12.8,
+                 saf_T=32.0, saf_alpha_f=1.9, saf_delta=3.0, saf_momentum=0.999):
         super().__init__()
         self.dfl_ch = dfl_ch
+        self.box_loss_type = str(box_loss_type).lower()
+        # SAF-SIoU hyperparameters (C, T in input-scale pixels)
+        self.saf_theta = saf_theta
+        self.saf_C = saf_C
+        self.saf_T = saf_T
+        self.saf_alpha_f = saf_alpha_f
+        self.saf_delta = saf_delta
+        self.saf_momentum = saf_momentum
+        # WIoU-v3 running mean of L_reg (buffer moves with .to(device))
+        self.register_buffer('running_mean', torch.tensor(1.0))
 
-    def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
-        # IoU loss
+    def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes,
+                target_scores, target_scores_sum, fg_mask, stride_tensor=None):
+        # per-anchor weight (unchanged: alignment score, applied on top of the box cost)
         weight = torch.masked_select(target_scores.sum(-1), fg_mask).unsqueeze(-1)
-        iou = compute_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask])
-        loss_box = ((1.0 - iou) * weight).sum() / target_scores_sum
+
+        if self.box_loss_type == 'saf_siou':
+            if stride_tensor is None:
+                raise ValueError('saf_siou box loss requires stride_tensor to convert to pixels')
+            # boxes at this site are xyxy in per-level GRID units; convert fg boxes to
+            # INPUT-SCALE PIXELS so the pixel-unit hyperparameters C, T are correct.
+            strides = stride_tensor.squeeze(-1).unsqueeze(0).expand(fg_mask.shape)
+            s_fg = strides[fg_mask].unsqueeze(-1)
+            pred_px = pred_bboxes[fg_mask] * s_fg
+            gt_px = target_bboxes[fg_mask] * s_fg
+
+            l_reg = saf_siou_reg(pred_px, gt_px, self.saf_C, self.saf_T, self.saf_theta)
+
+            # (4) WIoU-v3 dynamic non-monotonic focusing (r is detached; grad flows via l_reg)
+            eps = 1e-7
+            beta = l_reg.detach() / (self.running_mean.to(l_reg.dtype) + eps)
+            r = beta / (self.saf_delta * self.saf_alpha_f ** (beta - self.saf_delta))
+            if self.training:
+                with torch.no_grad():
+                    self.running_mean.mul_(self.saf_momentum).add_(
+                        (1 - self.saf_momentum) * l_reg.detach().mean())
+
+            loss_box = (r * l_reg * weight).sum() / target_scores_sum
+        else:
+            # CIoU loss (original)
+            iou = compute_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask])
+            loss_box = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
         a, b = target_bboxes.chunk(2, -1)
@@ -605,7 +693,16 @@ class ComputeLoss:
         self.reg_max = m.ch
         self.device = device
 
-        self.box_loss = BoxLoss(m.ch - 1).to(device)
+        self.box_loss = BoxLoss(
+            m.ch - 1,
+            box_loss_type=str(params.get('box_loss_type', 'ciou')).lower(),
+            saf_theta=float(params.get('saf_theta', 4.0)),
+            saf_C=float(params.get('saf_C', 12.8)),
+            saf_T=float(params.get('saf_T', 32.0)),
+            saf_alpha_f=float(params.get('saf_alpha_f', 1.9)),
+            saf_delta=float(params.get('saf_delta', 3.0)),
+            saf_momentum=float(params.get('saf_momentum', 0.999)),
+        ).to(device)
 
         self.cls_loss_type = str(params.get('cls_loss_type', 'bce')).lower()
         self.cls_pos_weight = None
@@ -709,7 +806,8 @@ class ComputeLoss:
                                                anchor_points,
                                                target_bboxes,
                                                target_scores,
-                                               target_scores_sum, fg_mask)
+                                               target_scores_sum, fg_mask,
+                                               stride_tensor)
 
         loss_box *= self.params['box']  # box gain
         loss_cls *= self.params['cls']  # cls gain
