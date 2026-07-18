@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from BoTNet import BottleStack
 
 
 def yolo_params(version):
@@ -169,7 +170,23 @@ class Backbone(nn.Module):
         self.c2f_2 = C2f(int(128 * w), int(128 * w), num_bottlenecks=int(3 * d), shortcut=shortcut)
         self.c2f_4 = C2f(int(256 * w), int(256 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
         self.c2f_6 = C2f(int(512 * w), int(512 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
-        self.c2f_8 = C2f(int(512 * w * r), int(512 * w * r), num_bottlenecks=int(3 * d), shortcut=shortcut)
+        # c2f_8 replaced with a BoTNet stack (MHSA) at the P5 stage.
+        # dim == dim_out so it is shape-preserving (neck/head unchanged).
+        # fmap_size=20 because the pipeline feeds 640x640 (P5 = 640/32 = 20x20)
+        # and rel_pos_emb bakes that size in — it asserts if the input size changes.
+        p5_channels = int(512 * w * r)
+        self.btsck = BottleStack(
+            dim=p5_channels,
+            dim_out=p5_channels,
+            fmap_size=20,
+            num_layers=3,
+            heads=4,
+            dim_head=p5_channels // (4 * 4),
+            proj_factor=4,
+            downsample=False,
+            rel_pos_emb=True,
+            activation=nn.SiLU(),
+        )
 
         # CBAM on the three feature maps that feed the neck — channels match
         # each C2f's output. Shape-preserving, so the neck/head are unchanged.
@@ -188,7 +205,7 @@ class Backbone(nn.Module):
         x = self.conv_5(out1)
         out2 = self.cbam_6(self.c2f_6(x))
         x = self.conv_7(out2)
-        x = self.cbam_8(self.c2f_8(x))
+        x = self.cbam_8(self.btsck(x))
         out3 = self.sppf(x)
         return out1, out2, out3
 

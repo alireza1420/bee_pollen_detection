@@ -4,3 +4,4 @@ PyYAML==6.0.2
 pycocotools==2.0.10
 lightning-utilities==0.15.3
 torchmetrics[detection]==1.7.4
+einops==0.8.2
