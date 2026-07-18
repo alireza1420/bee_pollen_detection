@@ -752,7 +752,9 @@ def main():
     MOMENTUM     = 0.937
     WEIGHT_DECAY = 5e-4
     SEED         = 42
-    MODEL_NAME   = os.environ.get('POLLENBEES_MODEL_NAME', 'custom_yolov8s_baseline')
+    ATTN         = os.environ.get('POLLENBEES_ATTN', 'none')   # none|cbam|botnet|cbam_botnet
+    _default_name = 'custom_yolov8s_baseline' if ATTN == 'none' else f'custom_yolov8s_{ATTN}'
+    MODEL_NAME   = os.environ.get('POLLENBEES_MODEL_NAME', _default_name)
     RUN_ID       = os.environ.get('POLLENBEES_RUN_ID', datetime.now().strftime('%Y%m%d_%H%M%S'))
     EVAL_EVERY   = 1
     STATS_CONF_THR = 0.25
@@ -803,7 +805,8 @@ def main():
     import yaml
     from utils import util
 
-    model = MyYolo(version='s', num_classes=2).to(DEVICE)
+    log.info(f'Attention mode: {ATTN}')
+    model = MyYolo(version='s', num_classes=2, attn=ATTN).to(DEVICE)
     log.info(f'Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M')
 
     with open('utils/args.yaml') as f:

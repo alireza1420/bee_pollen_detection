@@ -157,8 +157,15 @@ class CBAM(nn.Module):
 
 
 class Backbone(nn.Module):
-    def __init__(self, version, in_channels=3, shortcut=True):
+    ATTN_MODES = ("none", "cbam", "botnet", "cbam_botnet")
+
+    def __init__(self, version, in_channels=3, shortcut=True, attn="cbam_botnet"):
         super().__init__()
+        if attn not in self.ATTN_MODES:
+            raise ValueError(f"attn must be one of {self.ATTN_MODES}, got {attn!r}")
+        use_cbam = attn in ("cbam", "cbam_botnet")
+        use_botnet = attn in ("botnet", "cbam_botnet")
+
         d, w, r = yolo_params(version)
 
         self.conv_0 = Conv(in_channels, int(64 * w), kernel_size=3, stride=2, padding=1)
@@ -170,29 +177,32 @@ class Backbone(nn.Module):
         self.c2f_2 = C2f(int(128 * w), int(128 * w), num_bottlenecks=int(3 * d), shortcut=shortcut)
         self.c2f_4 = C2f(int(256 * w), int(256 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
         self.c2f_6 = C2f(int(512 * w), int(512 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
-        # c2f_8 replaced with a BoTNet stack (MHSA) at the P5 stage.
-        # dim == dim_out so it is shape-preserving (neck/head unchanged).
-        # fmap_size=20 because the pipeline feeds 640x640 (P5 = 640/32 = 20x20)
+        # P5 block: BoTNet stack (MHSA) when enabled, else the standard C2f (c2f_8).
+        # Both are shape-preserving (p5_channels -> p5_channels) so neck/head are unchanged.
+        # BoTNet fmap_size=20 because the pipeline feeds 640x640 (P5 = 640/32 = 20x20)
         # and rel_pos_emb bakes that size in — it asserts if the input size changes.
         p5_channels = int(512 * w * r)
-        self.btsck = BottleStack(
-            dim=p5_channels,
-            dim_out=p5_channels,
-            fmap_size=20,
-            num_layers=3,
-            heads=4,
-            dim_head=p5_channels // (4 * 4),
-            proj_factor=4,
-            downsample=False,
-            rel_pos_emb=True,
-            activation=nn.SiLU(),
-        )
+        if use_botnet:
+            self.p5_block = BottleStack(
+                dim=p5_channels,
+                dim_out=p5_channels,
+                fmap_size=20,
+                num_layers=3,
+                heads=4,
+                dim_head=p5_channels // (4 * 4),
+                proj_factor=4,
+                downsample=False,
+                rel_pos_emb=True,
+                activation=nn.SiLU(),
+            )
+        else:
+            self.p5_block = C2f(p5_channels, p5_channels, num_bottlenecks=int(3 * d), shortcut=shortcut)
 
-        # CBAM on the three feature maps that feed the neck — channels match
-        # each C2f's output. Shape-preserving, so the neck/head are unchanged.
-        self.cbam_4 = CBAM(int(256 * w))
-        self.cbam_6 = CBAM(int(512 * w))
-        self.cbam_8 = CBAM(int(512 * w * r))
+        # CBAM on the three feature maps that feed the neck (Identity when disabled,
+        # keeping forward() branch-free). Channels match each stage's output.
+        self.cbam_4 = CBAM(int(256 * w)) if use_cbam else nn.Identity()
+        self.cbam_6 = CBAM(int(512 * w)) if use_cbam else nn.Identity()
+        self.cbam_8 = CBAM(int(512 * w * r)) if use_cbam else nn.Identity()
 
         self.sppf = SPPF(int(512 * w * r), int(512 * w * r))
 
@@ -205,7 +215,7 @@ class Backbone(nn.Module):
         x = self.conv_5(out1)
         out2 = self.cbam_6(self.c2f_6(x))
         x = self.conv_7(out2)
-        x = self.cbam_8(self.btsck(x))
+        x = self.cbam_8(self.p5_block(x))
         out3 = self.sppf(x)
         return out1, out2, out3
 
@@ -380,9 +390,9 @@ class Head(nn.Module):
 
 
 class MyYolo(nn.Module):
-    def __init__(self, version="s", num_classes=2):
+    def __init__(self, version="s", num_classes=2, attn="cbam_botnet"):
         super().__init__()
-        self.backbone = Backbone(version=version)
+        self.backbone = Backbone(version=version, attn=attn)
         self.neck = Neck(version=version)
         self.head = Head(version=version, num_classes=num_classes)
 
@@ -390,3 +400,25 @@ class MyYolo(nn.Module):
         x = self.backbone(x)
         x = self.neck(x[0], x[1], x[2])
         return self.head(list(x))
+
+
+if __name__ == "__main__":
+    # Self-check: every attn mode builds, forwards 640x640, and the flag actually
+    # gates modules (param counts differ as expected).
+    def _params(m):
+        return sum(p.numel() for p in m.parameters())
+
+    counts = {}
+    for mode in Backbone.ATTN_MODES:
+        m = MyYolo(version="s", num_classes=2, attn=mode).eval()
+        with torch.no_grad():
+            out = m(torch.zeros(1, 3, 640, 640))
+        expected = (1, 4 + m.head.nc, 8400)  # (box(4) + classes) x anchors(80^2+40^2+20^2)
+        assert out.shape == expected, f"{mode}: got {tuple(out.shape)}, expected {expected}"
+        counts[mode] = _params(m)
+        print(f"{mode:12s} params={counts[mode]:>12,} out={tuple(out.shape)}")
+
+    assert counts["cbam"] > counts["none"], "CBAM should add parameters over baseline"
+    assert counts["cbam_botnet"] > counts["botnet"], "CBAM should add parameters over BoTNet"
+    assert counts["botnet"] != counts["none"], "BoTNet should change the P5 block"
+    print("OK: all attn modes build and the toggle gates modules.")
