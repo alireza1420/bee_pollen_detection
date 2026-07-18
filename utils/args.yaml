@@ -30,6 +30,15 @@ cls_pos_weight:
   - 1.0
   - 4.0
 
+# Class-balanced weighting via effective number of samples (Cui et al. 2019).
+# Opt-in, default off. When on, per-class weights are computed from the train-set
+# GT counts (injected by the pipeline) and OVERRIDE cls_pos_weight above.
+cls_effective_number: false
+cls_effective_number_beta: 0.999
+# Optionally scale each instance's SAF-SIoU L_reg by its assigned class weight
+# (reuses the same weights; requires box_loss_type: saf_siou). Default off.
+box_class_coupling: false
+
 hsv_h: 0.0150000000000
 hsv_s: 0.7000000000000
 hsv_v: 0.4000000000000

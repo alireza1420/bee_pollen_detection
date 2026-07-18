@@ -251,6 +251,8 @@ class PollenBeeDataset(Dataset):
                 f'  {CLASS_NAMES.get(cls_id, cls_id)}: {cnt} instances '
                 f'({100 * cnt / max(total, 1):.1f}%)'
             )
+        # Store for the loss (effective-number class weighting reads these).
+        self.class_counts = counts
 
     def __len__(self):
         return len(self.img_paths)
@@ -811,6 +813,10 @@ def main():
 
     with open('utils/args.yaml') as f:
         params = yaml.safe_load(f)
+    # Inject per-class GT counts from the TRAIN split so the loss can build
+    # effective-number class weights (only used when cls_effective_number is on).
+    params['class_counts'] = [train_ds.class_counts.get(i, 0) for i in range(len(CLASS_NAMES))]
+    log.info(f'Train class counts (for class weighting): {params["class_counts"]}')
     criterion = util.ComputeLoss(model, params)
 
     # ── Step 4: Optimiser + scheduler ────────────────────────────────────
@@ -867,6 +873,7 @@ def main():
                     'epoch':        epoch,
                     'model':        model.state_dict(),
                     'optimizer':    optimizer.state_dict(),
+                    'box_loss':     criterion.box_loss.state_dict(),  # WIoU running_mean + class_weight
                     'map50':        map50,
                     'pollenbee_f1': pollen_f1,
                     'config': {
