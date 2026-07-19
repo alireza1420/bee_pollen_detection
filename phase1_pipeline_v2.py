@@ -761,6 +761,12 @@ def main():
     EVAL_EVERY   = 1
     STATS_CONF_THR = 0.25
     STATS_IOU_THR  = 0.50
+    # Early stopping on pollenbee F1 (the same metric best.pt is selected by).
+    # PATIENCE=0 disables it. MIN_EPOCHS is a floor: the ~3% pollenbee class often
+    # sits at F1=0 for many early epochs before it starts being detected, so we
+    # never stop before then or we'd kill the run during that plateau.
+    EARLY_STOP_PATIENCE   = int(os.environ.get('POLLENBEES_PATIENCE', 20))
+    EARLY_STOP_MIN_EPOCHS = int(os.environ.get('POLLENBEES_MIN_EPOCHS', 30))
     SAVE_DIR     = os.path.join(DATASET_ROOT, 'runs', 'baseline')
     RESULTS_DIR  = os.path.join(DATASET_ROOT, 'runs', 'results')
     RESULTS_CSV  = os.path.join(RESULTS_DIR, f'{MODEL_NAME}_{RUN_ID}.csv')
@@ -791,14 +797,20 @@ def main():
     log.info('--- Val split ---')
     val_ds   = PollenBeeDataset(VAL_ROOT,   img_size=IMG_SIZE)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=4, pin_memory=True, collate_fn=collate_fn,
+    # num_workers via env (POLLENBEES_WORKERS). persistent_workers reuses the
+    # workers across epochs instead of re-spawning them every epoch — on Windows
+    # the per-epoch spawn/teardown churn eventually makes workers "exit
+    # unexpectedly" during a long run. Set POLLENBEES_WORKERS=0 for a worker-free
+    # (slower but bulletproof) run.
+    NUM_WORKERS = int(os.environ.get('POLLENBEES_WORKERS', 4))
+    log.info(f'DataLoader workers: {NUM_WORKERS}')
+    loader_kwargs = dict(
+        batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
+        pin_memory=(DEVICE == 'cuda'), collate_fn=collate_fn,
+        persistent_workers=NUM_WORKERS > 0,
     )
-    val_loader = DataLoader(
-        val_ds, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=4, pin_memory=True, collate_fn=collate_fn,
-    )
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
 
     # ── Step 3: Model ─────────────────────────────────────────────────────
     # Import MyYolo from the file where you saved your notebook code.
@@ -838,6 +850,7 @@ def main():
     POLLENBEE_ID = CLASS_MAP['pollenbee']
     history        = {'train_loss': [], 'val_metrics': []}
     best_pollen_f1 = -1.0
+    epochs_no_improve = 0   # for early stopping
 
     for epoch in range(1, NUM_EPOCHS + 1):
         current_lr = scheduler.get_last_lr()[0]
@@ -868,6 +881,7 @@ def main():
 
             if pollen_f1 > best_pollen_f1:
                 best_pollen_f1 = pollen_f1
+                epochs_no_improve = 0
                 ckpt = os.path.join(SAVE_DIR, 'best.pt')
                 torch.save({
                     'epoch':        epoch,
@@ -885,6 +899,24 @@ def main():
                     },
                 }, ckpt)
                 log.info(f'New best saved → {ckpt}  (pollenbee F1={pollen_f1:.4f}, mAP@0.50={map50:.4f})')
+            else:
+                epochs_no_improve += 1
+                log.info(
+                    f'No pollenbee-F1 improvement for {epochs_no_improve}/{EARLY_STOP_PATIENCE} '
+                    f'epoch(s) (best={best_pollen_f1:.4f})'
+                )
+
+            # Early stopping. Counts in eval-events; with EVAL_EVERY=1 that is epochs.
+            # best.pt already holds the best epoch, so stopping only saves compute —
+            # it never costs you the best model.
+            if (EARLY_STOP_PATIENCE > 0
+                    and epoch >= EARLY_STOP_MIN_EPOCHS
+                    and epochs_no_improve >= EARLY_STOP_PATIENCE):
+                log.info(
+                    f'Early stopping at epoch {epoch}: no pollenbee-F1 improvement for '
+                    f'{epochs_no_improve} epochs (best={best_pollen_f1:.4f}).'
+                )
+                break
 
     log.info(f'Training complete.  Best pollenbee F1: {best_pollen_f1:.4f}')
 
