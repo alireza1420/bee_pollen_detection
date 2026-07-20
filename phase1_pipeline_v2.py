@@ -741,7 +741,9 @@ def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70, 
 
 def main():
     # ── Paths — edit DATASET_ROOT to point at your pollenbees/ folder ────
-    DATASET_ROOT = r'E:\Alireza\pollenbees'    # Windows path — use raw string
+    # POLLENBEES_DATA overrides the dataset root (set it on Colab, e.g.
+    # /content/pollenbees). Falls back to the local Windows path.
+    DATASET_ROOT = os.environ.get('POLLENBEES_DATA', r'E:\Alireza\pollenbees')
     TRAIN_ROOT   = os.path.join(DATASET_ROOT, 'train')
     VAL_ROOT     = os.path.join(DATASET_ROOT, 'val')
     TEST_ROOT    = os.path.join(DATASET_ROOT, 'test')
@@ -767,8 +769,11 @@ def main():
     # never stop before then or we'd kill the run during that plateau.
     EARLY_STOP_PATIENCE   = int(os.environ.get('POLLENBEES_PATIENCE', 20))
     EARLY_STOP_MIN_EPOCHS = int(os.environ.get('POLLENBEES_MIN_EPOCHS', 30))
-    SAVE_DIR     = os.path.join(DATASET_ROOT, 'runs', 'baseline')
-    RESULTS_DIR  = os.path.join(DATASET_ROOT, 'runs', 'results')
+    # POLLENBEES_OUT sends checkpoints/CSVs somewhere persistent (e.g. a Drive
+    # path) while data can live on fast local disk. Defaults to DATASET_ROOT.
+    OUT_ROOT     = os.environ.get('POLLENBEES_OUT', DATASET_ROOT)
+    SAVE_DIR     = os.path.join(OUT_ROOT, 'runs', 'baseline')
+    RESULTS_DIR  = os.path.join(OUT_ROOT, 'runs', 'results')
     RESULTS_CSV  = os.path.join(RESULTS_DIR, f'{MODEL_NAME}_{RUN_ID}.csv')
     DEVICE       = 'cuda' if torch.cuda.is_available() else 'cpu'
 
