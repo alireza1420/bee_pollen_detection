@@ -28,7 +28,7 @@ vfl_gamma: 2.0
 vfl_iou_weighted: true
 cls_pos_weight:
   - 1.0
-  - 4.0
+  - 2.0
 
 # Class-balanced weighting via effective number of samples (Cui et al. 2019).
 # Opt-in, default off. When on, per-class weights are computed from the train-set

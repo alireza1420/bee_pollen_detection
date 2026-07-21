@@ -761,7 +761,7 @@ def main():
     MODEL_NAME   = os.environ.get('POLLENBEES_MODEL_NAME', _default_name)
     RUN_ID       = os.environ.get('POLLENBEES_RUN_ID', datetime.now().strftime('%Y%m%d_%H%M%S'))
     EVAL_EVERY   = 1
-    STATS_CONF_THR = 0.25
+    STATS_CONF_THR = 0.5
     STATS_IOU_THR  = 0.50
     # Early stopping on pollenbee F1 (the same metric best.pt is selected by).
     # PATIENCE=0 disables it. MIN_EPOCHS is a floor: the ~3% pollenbee class often
