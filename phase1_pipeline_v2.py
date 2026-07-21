@@ -929,6 +929,31 @@ def main():
     with open(os.path.join(SAVE_DIR, 'history.json'), 'w') as f:
         _json.dump(history, f, indent=2)
 
+    # ── Step 6: Final evaluation on the held-out TEST split ───────────────
+    # Load best.pt (selected by val pollenbee F1) so we report the chosen
+    # checkpoint, not whatever the last epoch happened to be.
+    best_ckpt = os.path.join(SAVE_DIR, 'best.pt')
+    if os.path.isdir(annotations_dir(TEST_ROOT)) and os.path.exists(best_ckpt):
+        log.info('--- Test split (final, using best.pt) ---')
+        model.load_state_dict(torch.load(best_ckpt, map_location=DEVICE)['model'])
+        test_ds     = PollenBeeDataset(TEST_ROOT, img_size=IMG_SIZE)
+        test_loader = DataLoader(
+            test_ds, batch_size=BATCH_SIZE, shuffle=False,
+            num_workers=4, pin_memory=True, collate_fn=collate_fn,
+        )
+        test_res = evaluate(
+            model, test_loader, DEVICE, img_size=IMG_SIZE,
+            stats_conf_thr=STATS_CONF_THR, stats_iou_thr=STATS_IOU_THR,
+        )
+        test_row = build_metrics_row(
+            RUN_ID, MODEL_NAME, 'test', '', '',
+            test_res, STATS_CONF_THR, STATS_IOU_THR,
+        )
+        append_metrics_csv(RESULTS_CSV, test_row, metric_fields)
+        log.info(f'Test metrics appended (epoch="test") → {RESULTS_CSV}')
+    else:
+        log.warning('Skipping test eval: test annotations or best.pt not found.')
+
 
 if __name__ == '__main__':
     main()
