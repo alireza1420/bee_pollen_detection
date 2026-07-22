@@ -574,6 +574,27 @@ def _per_class_result(res, key='map_per_class', classes_key='classes'):
     return classes, values
 
 
+def pollenbee_fitness(res, pollen_id):
+    """YOLO-style 'fitness' restricted to the pollenbee (minority) class:
+        fitness = 0.1 * AP@0.5 + 0.9 * AP@0.5:0.95   (pollenbee only)
+    This is the Ultralytics fitness blend but computed on the pollenbee
+    per-class AP instead of the all-class mAP, so it keeps the minority-class
+    focus best.pt is selected for while being smoother than the raw pollenbee F1
+    (which sits at exactly 0 for many early epochs). torchmetrics reports -1 for
+    an absent class, so each term is floored at 0; returns 0.0 until pollenbee
+    starts getting detected.
+    """
+    def _ap(per_class_key, classes_key):
+        classes, values = _per_class_result(res, key=per_class_key, classes_key=classes_key)
+        for cid, v in zip(classes.tolist(), values.tolist()):
+            if int(cid) == pollen_id:
+                return max(float(v), 0.0)
+        return 0.0
+    ap50    = _ap('map_50_per_class', 'classes_50')
+    ap50_95 = _ap('map_per_class', 'classes')
+    return 0.1 * ap50 + 0.9 * ap50_95
+
+
 def metric_to_float(value):
     if isinstance(value, torch.Tensor):
         return float(value.detach().cpu().item())
@@ -763,10 +784,11 @@ def main():
     EVAL_EVERY   = 1
     STATS_CONF_THR = 0.5
     STATS_IOU_THR  = 0.50
-    # Early stopping on pollenbee F1 (the same metric best.pt is selected by).
+    # Early stopping on pollenbee-weighted fitness (0.1*AP@0.5 + 0.9*AP@0.5:0.95
+    # over the pollenbee class), the same metric best.pt is selected by.
     # PATIENCE=0 disables it. MIN_EPOCHS is a floor: the ~3% pollenbee class often
-    # sits at F1=0 for many early epochs before it starts being detected, so we
-    # never stop before then or we'd kill the run during that plateau.
+    # sits at fitness=0 for many early epochs before it starts being detected, so
+    # we never stop before then or we'd kill the run during that plateau.
     EARLY_STOP_PATIENCE   = int(os.environ.get('POLLENBEES_PATIENCE', 20))
     EARLY_STOP_MIN_EPOCHS = int(os.environ.get('POLLENBEES_MIN_EPOCHS', 30))
     # POLLENBEES_OUT sends checkpoints/CSVs somewhere persistent (e.g. a Drive
@@ -854,13 +876,15 @@ def main():
     )
 
     # ── Step 5: Train ────────────────────────────────────────────────────
-    # Select best.pt by pollenbee F1, not overall mAP@0.50. Pollenbee is the
-    # ~3% minority class that matters for this dataset; picking on mAP@0.50
-    # rewards the majority class and can save a checkpoint that barely detects
-    # pollenbee (as happened in the earlier run — best mAP epoch had pollenbee F1 ~0.5).
+    # Select best.pt by pollenbee-weighted fitness (0.1*AP@0.5 + 0.9*AP@0.5:0.95
+    # on the pollenbee class), not overall mAP@0.50. Pollenbee is the ~3% minority
+    # class that matters for this dataset; picking on all-class mAP@0.50 rewards
+    # the majority class and can save a checkpoint that barely detects pollenbee
+    # (as happened in an earlier run — best mAP epoch had pollenbee F1 ~0.5). The
+    # fitness blend keeps that minority-class focus but is smoother than raw F1.
     POLLENBEE_ID = CLASS_MAP['pollenbee']
     history        = {'train_loss': [], 'val_metrics': []}
-    best_pollen_f1 = -1.0
+    best_fitness   = -1.0
     epochs_no_improve = 0   # for early stopping
 
     for epoch in range(1, NUM_EPOCHS + 1):
@@ -882,6 +906,7 @@ def main():
             )
             map50 = metric_to_float(res['map_50'])
             pollen_f1 = res['class_stats'][POLLENBEE_ID]['f1']
+            fitness   = pollenbee_fitness(res, POLLENBEE_ID)
             metrics_row = build_metrics_row(
                 RUN_ID, MODEL_NAME, epoch, current_lr, train_loss,
                 res, STATS_CONF_THR, STATS_IOU_THR,
@@ -889,9 +914,10 @@ def main():
             append_metrics_csv(RESULTS_CSV, metrics_row, metric_fields)
             history['val_metrics'].append(metrics_row)
             log.info(f'Epoch {epoch} metrics appended → {RESULTS_CSV}')
+            log.info(f'Epoch {epoch} pollenbee fitness: {fitness:.4f}')
 
-            if pollen_f1 > best_pollen_f1:
-                best_pollen_f1 = pollen_f1
+            if fitness > best_fitness:
+                best_fitness = fitness
                 epochs_no_improve = 0
                 ckpt = os.path.join(SAVE_DIR, 'best.pt')
                 torch.save({
@@ -901,6 +927,7 @@ def main():
                     'box_loss':     criterion.box_loss.state_dict(),  # WIoU running_mean + class_weight
                     'map50':        map50,
                     'pollenbee_f1': pollen_f1,
+                    'fitness':      fitness,
                     'config': {
                         'model_name': MODEL_NAME,
                         'run_id': RUN_ID,
@@ -909,12 +936,15 @@ def main():
                         'num_classes': 2,
                     },
                 }, ckpt)
-                log.info(f'New best saved → {ckpt}  (pollenbee F1={pollen_f1:.4f}, mAP@0.50={map50:.4f})')
+                log.info(
+                    f'New best saved → {ckpt}  (fitness={fitness:.4f}, '
+                    f'pollenbee F1={pollen_f1:.4f}, mAP@0.50={map50:.4f})'
+                )
             else:
                 epochs_no_improve += 1
                 log.info(
-                    f'No pollenbee-F1 improvement for {epochs_no_improve}/{EARLY_STOP_PATIENCE} '
-                    f'epoch(s) (best={best_pollen_f1:.4f})'
+                    f'No pollenbee-fitness improvement for {epochs_no_improve}/{EARLY_STOP_PATIENCE} '
+                    f'epoch(s) (best={best_fitness:.4f})'
                 )
 
             # Early stopping. Counts in eval-events; with EVAL_EVERY=1 that is epochs.
@@ -924,12 +954,12 @@ def main():
                     and epoch >= EARLY_STOP_MIN_EPOCHS
                     and epochs_no_improve >= EARLY_STOP_PATIENCE):
                 log.info(
-                    f'Early stopping at epoch {epoch}: no pollenbee-F1 improvement for '
-                    f'{epochs_no_improve} epochs (best={best_pollen_f1:.4f}).'
+                    f'Early stopping at epoch {epoch}: no pollenbee-fitness improvement for '
+                    f'{epochs_no_improve} epochs (best={best_fitness:.4f}).'
                 )
                 break
 
-    log.info(f'Training complete.  Best pollenbee F1: {best_pollen_f1:.4f}')
+    log.info(f'Training complete.  Best pollenbee fitness: {best_fitness:.4f}')
 
     import json as _json
     with open(os.path.join(SAVE_DIR, 'history.json'), 'w') as f:
