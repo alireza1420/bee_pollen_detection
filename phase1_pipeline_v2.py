@@ -749,7 +749,7 @@ def main():
     TEST_ROOT    = os.path.join(DATASET_ROOT, 'test')
 
     # ── Hyperparameters (standard YOLOv8 defaults — cite the original paper)
-    IMG_SIZE     = 640
+    IMG_SIZE     = 1280 #changed from 640 
     BATCH_SIZE   = 16
     NUM_EPOCHS   = int(os.environ.get('POLLENBEES_EPOCHS', 100))
     LR           = 0.01          # initial learning rate
