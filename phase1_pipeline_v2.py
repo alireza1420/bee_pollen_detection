@@ -778,7 +778,9 @@ def main():
     WEIGHT_DECAY = 5e-4
     SEED         = 42
     ATTN         = os.environ.get('POLLENBEES_ATTN', 'none')   # none|cbam|botnet|cbam_botnet
-    _default_name = 'custom_yolov8s_baseline' if ATTN == 'none' else f'custom_yolov8s_{ATTN}'
+    VERSION      = os.environ.get('POLLENBEES_VERSION', 'm')   # n|s|m|l|x  (YOLOv8 scale)
+    _default_name = (f'custom_yolov8{VERSION}_baseline' if ATTN == 'none'
+                     else f'custom_yolov8{VERSION}_{ATTN}')
     MODEL_NAME   = os.environ.get('POLLENBEES_MODEL_NAME', _default_name)
     RUN_ID       = os.environ.get('POLLENBEES_RUN_ID', datetime.now().strftime('%Y%m%d_%H%M%S'))
     EVAL_EVERY   = 1
@@ -852,8 +854,8 @@ def main():
     import yaml
     from utils import util
 
-    log.info(f'Attention mode: {ATTN}')
-    model = MyYolo(version='s', num_classes=2, attn=ATTN, img_size=IMG_SIZE).to(DEVICE)
+    log.info(f'Model scale: yolov8{VERSION}   Attention mode: {ATTN}')
+    model = MyYolo(version=VERSION, num_classes=2, attn=ATTN, img_size=IMG_SIZE).to(DEVICE)
     log.info(f'Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M')
 
     with open('utils/args.yaml') as f:
@@ -931,7 +933,7 @@ def main():
                     'config': {
                         'model_name': MODEL_NAME,
                         'run_id': RUN_ID,
-                        'version': 's',
+                        'version': VERSION,
                         'img_size': IMG_SIZE,
                         'num_classes': 2,
                     },
