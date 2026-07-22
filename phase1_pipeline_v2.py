@@ -808,10 +808,16 @@ def main():
     # unexpectedly" during a long run. Set POLLENBEES_WORKERS=0 for a worker-free
     # (slower but bulletproof) run.
     NUM_WORKERS = int(os.environ.get('POLLENBEES_WORKERS', 4))
-    log.info(f'DataLoader workers: {NUM_WORKERS}')
+    # pin_memory defaults OFF on Windows: with num_workers>0 the pin-memory
+    # thread calls cudaHostRegister on the workers' shared-memory batches and
+    # can hit "CUDA error: resource already mapped" (cudaErrorAlreadyMapped),
+    # which crashes the run before epoch 1. Large 1280px batches make it worse.
+    # Set POLLENBEES_PIN=1 to re-enable if your setup tolerates it.
+    PIN_MEMORY = DEVICE == 'cuda' and os.environ.get('POLLENBEES_PIN', '0') == '1'
+    log.info(f'DataLoader workers: {NUM_WORKERS}  pin_memory: {PIN_MEMORY}')
     loader_kwargs = dict(
         batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
-        pin_memory=(DEVICE == 'cuda'), collate_fn=collate_fn,
+        pin_memory=PIN_MEMORY, collate_fn=collate_fn,
         persistent_workers=NUM_WORKERS > 0,
     )
     train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
@@ -939,7 +945,7 @@ def main():
         test_ds     = PollenBeeDataset(TEST_ROOT, img_size=IMG_SIZE)
         test_loader = DataLoader(
             test_ds, batch_size=BATCH_SIZE, shuffle=False,
-            num_workers=4, pin_memory=True, collate_fn=collate_fn,
+            num_workers=4, pin_memory=PIN_MEMORY, collate_fn=collate_fn,
         )
         test_res = evaluate(
             model, test_loader, DEVICE, img_size=IMG_SIZE,
