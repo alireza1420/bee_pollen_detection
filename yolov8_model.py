@@ -159,7 +159,7 @@ class CBAM(nn.Module):
 class Backbone(nn.Module):
     ATTN_MODES = ("none", "cbam", "botnet", "cbam_botnet")
 
-    def __init__(self, version, in_channels=3, shortcut=True, attn="cbam_botnet"):
+    def __init__(self, version, in_channels=3, shortcut=True, attn="cbam_botnet", img_size=640):
         super().__init__()
         if attn not in self.ATTN_MODES:
             raise ValueError(f"attn must be one of {self.ATTN_MODES}, got {attn!r}")
@@ -179,14 +179,16 @@ class Backbone(nn.Module):
         self.c2f_6 = C2f(int(512 * w), int(512 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
         # P5 block: BoTNet stack (MHSA) when enabled, else the standard C2f (c2f_8).
         # Both are shape-preserving (p5_channels -> p5_channels) so neck/head are unchanged.
-        # BoTNet fmap_size=20 because the pipeline feeds 640x640 (P5 = 640/32 = 20x20)
-        # and rel_pos_emb bakes that size in — it asserts if the input size changes.
+        # BoTNet's rel_pos_emb bakes the P5 fmap size in and asserts if the input
+        # size changes, so it must track img_size: P5 = img_size / 32 (e.g. 640->20,
+        # 1280->40). img_size must therefore be a multiple of 32.
+        p5_fmap_size = img_size // 32
         p5_channels = int(512 * w * r)
         if use_botnet:
             self.p5_block = BottleStack(
                 dim=p5_channels,
                 dim_out=p5_channels,
-                fmap_size=20,
+                fmap_size=p5_fmap_size,
                 num_layers=3,
                 heads=4,
                 dim_head=p5_channels // (4 * 4),
@@ -390,9 +392,9 @@ class Head(nn.Module):
 
 
 class MyYolo(nn.Module):
-    def __init__(self, version="s", num_classes=2, attn="cbam_botnet"):
+    def __init__(self, version="s", num_classes=2, attn="cbam_botnet", img_size=640):
         super().__init__()
-        self.backbone = Backbone(version=version, attn=attn)
+        self.backbone = Backbone(version=version, attn=attn, img_size=img_size)
         self.neck = Neck(version=version)
         self.head = Head(version=version, num_classes=num_classes)
 

@@ -825,7 +825,7 @@ def main():
     from utils import util
 
     log.info(f'Attention mode: {ATTN}')
-    model = MyYolo(version='s', num_classes=2, attn=ATTN).to(DEVICE)
+    model = MyYolo(version='s', num_classes=2, attn=ATTN, img_size=IMG_SIZE).to(DEVICE)
     log.info(f'Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M')
 
     with open('utils/args.yaml') as f:
