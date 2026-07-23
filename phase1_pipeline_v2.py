@@ -771,7 +771,7 @@ def main():
 
     # ── Hyperparameters (standard YOLOv8 defaults — cite the original paper)
     IMG_SIZE     = 1280 #changed from 640 
-    BATCH_SIZE   = 16
+    BATCH_SIZE   = 8
     NUM_EPOCHS   = int(os.environ.get('POLLENBEES_EPOCHS', 100))
     LR           = 0.01          # initial learning rate
     MOMENTUM     = 0.937
