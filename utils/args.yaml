@@ -14,7 +14,8 @@ cls: 0.500000000000000
 dfl: 1.500000000000000
 
 # Box regression loss: ciou | saf_siou
-box_loss_type: saf_siou
+# abl_baseline (row 0): stock CIoU — SAF-SIoU off
+box_loss_type: ciou
 saf_theta: 4          # Omega exponent in the SIoU shape cost
 saf_C: 12.8           # NWD scale, input-scale pixels
 saf_T: 32.0           # size-gate threshold, input-scale pixels
@@ -26,9 +27,10 @@ cls_loss_type: vfl
 vfl_alpha: 0.75
 vfl_gamma: 2.0
 vfl_iou_weighted: true
+# abl_baseline (row 0): unweighted VFL — minority weighting off
 cls_pos_weight:
   - 1.0
-  - 2.0
+  - 1.0
 
 # Class-balanced weighting via effective number of samples (Cui et al. 2019).
 # Opt-in, default off. When on, per-class weights are computed from the train-set
