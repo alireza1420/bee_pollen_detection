@@ -574,24 +574,27 @@ def _per_class_result(res, key='map_per_class', classes_key='classes'):
     return classes, values
 
 
+def class_ap(res, cls_id, per_class_key, classes_key):
+    """Per-class AP from a computed metric result, floored at 0
+    (torchmetrics reports -1 for a class absent from predictions)."""
+    classes, values = _per_class_result(res, key=per_class_key, classes_key=classes_key)
+    for cid, v in zip(classes.tolist(), values.tolist()):
+        if int(cid) == cls_id:
+            return max(float(v), 0.0)
+    return 0.0
+
+
 def pollenbee_fitness(res, pollen_id):
     """YOLO-style 'fitness' restricted to the pollenbee (minority) class:
         fitness = 0.1 * AP@0.5 + 0.9 * AP@0.5:0.95   (pollenbee only)
     This is the Ultralytics fitness blend but computed on the pollenbee
     per-class AP instead of the all-class mAP, so it keeps the minority-class
     focus best.pt is selected for while being smoother than the raw pollenbee F1
-    (which sits at exactly 0 for many early epochs). torchmetrics reports -1 for
-    an absent class, so each term is floored at 0; returns 0.0 until pollenbee
+    (which sits at exactly 0 for many early epochs). Returns 0.0 until pollenbee
     starts getting detected.
     """
-    def _ap(per_class_key, classes_key):
-        classes, values = _per_class_result(res, key=per_class_key, classes_key=classes_key)
-        for cid, v in zip(classes.tolist(), values.tolist()):
-            if int(cid) == pollen_id:
-                return max(float(v), 0.0)
-        return 0.0
-    ap50    = _ap('map_50_per_class', 'classes_50')
-    ap50_95 = _ap('map_per_class', 'classes')
+    ap50    = class_ap(res, pollen_id, 'map_50_per_class', 'classes_50')
+    ap50_95 = class_ap(res, pollen_id, 'map_per_class', 'classes')
     return 0.1 * ap50 + 0.9 * ap50_95
 
 
@@ -605,6 +608,7 @@ def metrics_csv_fields():
     fields = [
         'run_id',
         'model_name',
+        'seed',
         'epoch',
         'lr',
         'train_loss',
@@ -622,6 +626,8 @@ def metrics_csv_fields():
     for cls_id in sorted(CLASS_NAMES):
         name = CLASS_NAMES[cls_id]
         fields.extend([
+            f'{name}_ap50',
+            f'{name}_ap50_95',
             f'{name}_precision',
             f'{name}_recall',
             f'{name}_f1',
@@ -632,10 +638,11 @@ def metrics_csv_fields():
     return fields
 
 
-def build_metrics_row(run_id, model_name, epoch, lr, train_loss, eval_res, stats_conf_thr, stats_iou_thr):
+def build_metrics_row(run_id, model_name, seed, epoch, lr, train_loss, eval_res, stats_conf_thr, stats_iou_thr):
     row = {
         'run_id': run_id,
         'model_name': model_name,
+        'seed': seed,
         'epoch': epoch,
         'lr': lr,
         'train_loss': train_loss,
@@ -656,6 +663,8 @@ def build_metrics_row(run_id, model_name, epoch, lr, train_loss, eval_res, stats
     for cls_id in sorted(CLASS_NAMES):
         name = CLASS_NAMES[cls_id]
         cls_stats = eval_res['class_stats'][cls_id]
+        row[f'{name}_ap50'] = class_ap(eval_res, cls_id, 'map_50_per_class', 'classes_50')
+        row[f'{name}_ap50_95'] = class_ap(eval_res, cls_id, 'map_per_class', 'classes')
         row[f'{name}_precision'] = cls_stats['precision']
         row[f'{name}_recall'] = cls_stats['recall']
         row[f'{name}_f1'] = cls_stats['f1']
@@ -776,7 +785,7 @@ def main():
     LR           = 0.01          # initial learning rate
     MOMENTUM     = 0.937
     WEIGHT_DECAY = 5e-4
-    SEED         = 42
+    SEED         = int(os.environ.get('POLLENBEES_SEED', 42))
     ATTN         = os.environ.get('POLLENBEES_ATTN', 'none')   # none|cbam|botnet|cbam_botnet
     VERSION      = os.environ.get('POLLENBEES_VERSION', 'm')   # n|s|m|l|x  (YOLOv8 scale)
     _default_name = (f'custom_yolov8{VERSION}_baseline' if ATTN == 'none'
@@ -796,7 +805,8 @@ def main():
     # POLLENBEES_OUT sends checkpoints/CSVs somewhere persistent (e.g. a Drive
     # path) while data can live on fast local disk. Defaults to DATASET_ROOT.
     OUT_ROOT     = os.environ.get('POLLENBEES_OUT', DATASET_ROOT)
-    SAVE_DIR     = os.path.join(OUT_ROOT, 'runs', 'baseline')
+    # Per-run checkpoint dir — runs must never overwrite each other's best.pt.
+    SAVE_DIR     = os.path.join(OUT_ROOT, 'runs', f'{MODEL_NAME}_{RUN_ID}')
     RESULTS_DIR  = os.path.join(OUT_ROOT, 'runs', 'results')
     RESULTS_CSV  = os.path.join(RESULTS_DIR, f'{MODEL_NAME}_{RUN_ID}.csv')
     DEVICE       = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -813,6 +823,7 @@ def main():
     log.info(f'Dataset root: {DATASET_ROOT}')
     log.info(f'Model name: {MODEL_NAME}')
     log.info(f'Run ID: {RUN_ID}')
+    log.info(f'Seed: {SEED}')
     log.info(f'Metrics CSV: {RESULTS_CSV}')
 
     # ── Step 1: Convert annotations (skipped automatically if already done)
@@ -910,7 +921,7 @@ def main():
             pollen_f1 = res['class_stats'][POLLENBEE_ID]['f1']
             fitness   = pollenbee_fitness(res, POLLENBEE_ID)
             metrics_row = build_metrics_row(
-                RUN_ID, MODEL_NAME, epoch, current_lr, train_loss,
+                RUN_ID, MODEL_NAME, SEED, epoch, current_lr, train_loss,
                 res, STATS_CONF_THR, STATS_IOU_THR,
             )
             append_metrics_csv(RESULTS_CSV, metrics_row, metric_fields)
@@ -933,6 +944,7 @@ def main():
                     'config': {
                         'model_name': MODEL_NAME,
                         'run_id': RUN_ID,
+                        'seed': SEED,
                         'version': VERSION,
                         'img_size': IMG_SIZE,
                         'num_classes': 2,
@@ -984,7 +996,7 @@ def main():
             stats_conf_thr=STATS_CONF_THR, stats_iou_thr=STATS_IOU_THR,
         )
         test_row = build_metrics_row(
-            RUN_ID, MODEL_NAME, 'test', '', '',
+            RUN_ID, MODEL_NAME, SEED, 'test', '', '',
             test_res, STATS_CONF_THR, STATS_IOU_THR,
         )
         append_metrics_csv(RESULTS_CSV, test_row, metric_fields)

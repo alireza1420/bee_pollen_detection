@@ -18,3 +18,4 @@ sanity_check_result.jpg
 # Reference material / editor
 /articles/
 .vscode/
+paper/*.pdf

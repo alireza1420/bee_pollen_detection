@@ -1,0 +1,8 @@
+# Ablation run log
+
+One row per run (§6 of study_specifications.md). Fill AP/F1 from the run's
+test row after the final evaluation.
+
+| run_name | branch | commit SHA | seed | epochs | best epoch | pollen AP@0.5:0.95 | pollen F1 | notes |
+|---|---|---|---|---|---|---|---|---|
+| abl_baseline | run/abl_baseline | TBD | 42 | 100 | | | | stock YOLOv8m: attn=none, CIoU, unweighted VFL |
