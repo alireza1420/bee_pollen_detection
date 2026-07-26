@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from BoTNet import BottleStack
 
 
 def yolo_params(version):
@@ -110,9 +111,61 @@ class SPPF(nn.Module):
         return self.conv2(torch.cat([x, y1, y2, y3], dim=1))
 
 
-class Backbone(nn.Module):
-    def __init__(self, version, in_channels=3, shortcut=True):
+class ChannelAttention(nn.Module):
+    def __init__(self, channels, ratio=8):
         super().__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+        hidden = max(channels // ratio, 1)
+        self.mlp = nn.Sequential(
+            nn.Linear(channels, hidden, bias=False),
+            nn.ReLU(inplace=True),
+            nn.Linear(hidden, channels, bias=False),
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = self.mlp(self.avg_pool(x).squeeze(-1).squeeze(-1))
+        mx = self.mlp(self.max_pool(x).squeeze(-1).squeeze(-1))
+        weight = self.sigmoid(avg + mx).unsqueeze(-1).unsqueeze(-1)
+        return x * weight
+
+
+class SpatialAttention(nn.Module):
+    def __init__(self, kernel_size=7):
+        super().__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size, padding=kernel_size // 2, bias=False)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg = torch.mean(x, dim=1, keepdim=True)
+        mx, _ = torch.max(x, dim=1, keepdim=True)
+        weight = self.sigmoid(self.conv(torch.cat([avg, mx], dim=1)))
+        return x * weight
+
+
+class CBAM(nn.Module):
+    """Convolutional Block Attention Module: channel attention then spatial."""
+
+    def __init__(self, channels, ratio=8, kernel_size=7):
+        super().__init__()
+        self.channel_attention = ChannelAttention(channels, ratio)
+        self.spatial_attention = SpatialAttention(kernel_size)
+
+    def forward(self, x):
+        return self.spatial_attention(self.channel_attention(x))
+
+
+class Backbone(nn.Module):
+    ATTN_MODES = ("none", "cbam", "botnet", "cbam_botnet")
+
+    def __init__(self, version, in_channels=3, shortcut=True, attn="cbam_botnet", img_size=640):
+        super().__init__()
+        if attn not in self.ATTN_MODES:
+            raise ValueError(f"attn must be one of {self.ATTN_MODES}, got {attn!r}")
+        use_cbam = attn in ("cbam", "cbam_botnet")
+        use_botnet = attn in ("botnet", "cbam_botnet")
+
         d, w, r = yolo_params(version)
 
         self.conv_0 = Conv(in_channels, int(64 * w), kernel_size=3, stride=2, padding=1)
@@ -124,7 +177,35 @@ class Backbone(nn.Module):
         self.c2f_2 = C2f(int(128 * w), int(128 * w), num_bottlenecks=int(3 * d), shortcut=shortcut)
         self.c2f_4 = C2f(int(256 * w), int(256 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
         self.c2f_6 = C2f(int(512 * w), int(512 * w), num_bottlenecks=int(6 * d), shortcut=shortcut)
-        self.c2f_8 = C2f(int(512 * w * r), int(512 * w * r), num_bottlenecks=int(3 * d), shortcut=shortcut)
+        # P5 block: BoTNet stack (MHSA) when enabled, else the standard C2f (c2f_8).
+        # Both are shape-preserving (p5_channels -> p5_channels) so neck/head are unchanged.
+        # BoTNet's rel_pos_emb bakes the P5 fmap size in and asserts if the input
+        # size changes, so it must track img_size: P5 = img_size / 32 (e.g. 640->20,
+        # 1280->40). img_size must therefore be a multiple of 32.
+        p5_fmap_size = img_size // 32
+        p5_channels = int(512 * w * r)
+        if use_botnet:
+            self.p5_block = BottleStack(
+                dim=p5_channels,
+                dim_out=p5_channels,
+                fmap_size=p5_fmap_size,
+                num_layers=3,
+                heads=4,
+                dim_head=p5_channels // (4 * 4),
+                proj_factor=4,
+                downsample=False,
+                rel_pos_emb=True,
+                activation=nn.SiLU(),
+            )
+        else:
+            self.p5_block = C2f(p5_channels, p5_channels, num_bottlenecks=int(3 * d), shortcut=shortcut)
+
+        # CBAM on the three feature maps that feed the neck (Identity when disabled,
+        # keeping forward() branch-free). Channels match each stage's output.
+        self.cbam_4 = CBAM(int(256 * w)) if use_cbam else nn.Identity()
+        self.cbam_6 = CBAM(int(512 * w)) if use_cbam else nn.Identity()
+        self.cbam_8 = CBAM(int(512 * w * r)) if use_cbam else nn.Identity()
+
         self.sppf = SPPF(int(512 * w * r), int(512 * w * r))
 
     def forward(self, x):
@@ -132,11 +213,11 @@ class Backbone(nn.Module):
         x = self.conv_1(x)
         x = self.c2f_2(x)
         x = self.conv_3(x)
-        out1 = self.c2f_4(x)
+        out1 = self.cbam_4(self.c2f_4(x))
         x = self.conv_5(out1)
-        out2 = self.c2f_6(x)
+        out2 = self.cbam_6(self.c2f_6(x))
         x = self.conv_7(out2)
-        x = self.c2f_8(x)
+        x = self.cbam_8(self.p5_block(x))
         out3 = self.sppf(x)
         return out1, out2, out3
 
@@ -311,9 +392,9 @@ class Head(nn.Module):
 
 
 class MyYolo(nn.Module):
-    def __init__(self, version="s", num_classes=2):
+    def __init__(self, version="s", num_classes=2, attn="cbam_botnet", img_size=640):
         super().__init__()
-        self.backbone = Backbone(version=version)
+        self.backbone = Backbone(version=version, attn=attn, img_size=img_size)
         self.neck = Neck(version=version)
         self.head = Head(version=version, num_classes=num_classes)
 
@@ -321,3 +402,25 @@ class MyYolo(nn.Module):
         x = self.backbone(x)
         x = self.neck(x[0], x[1], x[2])
         return self.head(list(x))
+
+
+if __name__ == "__main__":
+    # Self-check: every attn mode builds, forwards 640x640, and the flag actually
+    # gates modules (param counts differ as expected).
+    def _params(m):
+        return sum(p.numel() for p in m.parameters())
+
+    counts = {}
+    for mode in Backbone.ATTN_MODES:
+        m = MyYolo(version="s", num_classes=2, attn=mode).eval()
+        with torch.no_grad():
+            out = m(torch.zeros(1, 3, 640, 640))
+        expected = (1, 4 + m.head.nc, 8400)  # (box(4) + classes) x anchors(80^2+40^2+20^2)
+        assert out.shape == expected, f"{mode}: got {tuple(out.shape)}, expected {expected}"
+        counts[mode] = _params(m)
+        print(f"{mode:12s} params={counts[mode]:>12,} out={tuple(out.shape)}")
+
+    assert counts["cbam"] > counts["none"], "CBAM should add parameters over baseline"
+    assert counts["cbam_botnet"] > counts["botnet"], "CBAM should add parameters over BoTNet"
+    assert counts["botnet"] != counts["none"], "BoTNet should change the P5 block"
+    print("OK: all attn modes build and the toggle gates modules.")

@@ -251,6 +251,8 @@ class PollenBeeDataset(Dataset):
                 f'  {CLASS_NAMES.get(cls_id, cls_id)}: {cnt} instances '
                 f'({100 * cnt / max(total, 1):.1f}%)'
             )
+        # Store for the loss (effective-number class weighting reads these).
+        self.class_counts = counts
 
     def __len__(self):
         return len(self.img_paths)
@@ -572,6 +574,27 @@ def _per_class_result(res, key='map_per_class', classes_key='classes'):
     return classes, values
 
 
+def pollenbee_fitness(res, pollen_id):
+    """YOLO-style 'fitness' restricted to the pollenbee (minority) class:
+        fitness = 0.1 * AP@0.5 + 0.9 * AP@0.5:0.95   (pollenbee only)
+    This is the Ultralytics fitness blend but computed on the pollenbee
+    per-class AP instead of the all-class mAP, so it keeps the minority-class
+    focus best.pt is selected for while being smoother than the raw pollenbee F1
+    (which sits at exactly 0 for many early epochs). torchmetrics reports -1 for
+    an absent class, so each term is floored at 0; returns 0.0 until pollenbee
+    starts getting detected.
+    """
+    def _ap(per_class_key, classes_key):
+        classes, values = _per_class_result(res, key=per_class_key, classes_key=classes_key)
+        for cid, v in zip(classes.tolist(), values.tolist()):
+            if int(cid) == pollen_id:
+                return max(float(v), 0.0)
+        return 0.0
+    ap50    = _ap('map_50_per_class', 'classes_50')
+    ap50_95 = _ap('map_per_class', 'classes')
+    return 0.1 * ap50 + 0.9 * ap50_95
+
+
 def metric_to_float(value):
     if isinstance(value, torch.Tensor):
         return float(value.detach().cpu().item())
@@ -739,26 +762,42 @@ def evaluate(model, loader, device, img_size=640, conf_thr=0.001, iou_thr=0.70, 
 
 def main():
     # ── Paths — edit DATASET_ROOT to point at your pollenbees/ folder ────
-    DATASET_ROOT = r'E:\Alireza\pollenbees'    # Windows path — use raw string
+    # POLLENBEES_DATA overrides the dataset root (set it on Colab, e.g.
+    # /content/pollenbees). Falls back to the local Windows path.
+    DATASET_ROOT = os.environ.get('POLLENBEES_DATA', r'E:\Alireza\pollenbees')
     TRAIN_ROOT   = os.path.join(DATASET_ROOT, 'train')
     VAL_ROOT     = os.path.join(DATASET_ROOT, 'val')
     TEST_ROOT    = os.path.join(DATASET_ROOT, 'test')
 
     # ── Hyperparameters (standard YOLOv8 defaults — cite the original paper)
-    IMG_SIZE     = 640
-    BATCH_SIZE   = 16
+    IMG_SIZE     = 1280 #changed from 640 
+    BATCH_SIZE   = 4
     NUM_EPOCHS   = int(os.environ.get('POLLENBEES_EPOCHS', 100))
     LR           = 0.01          # initial learning rate
     MOMENTUM     = 0.937
     WEIGHT_DECAY = 5e-4
     SEED         = 42
-    MODEL_NAME   = os.environ.get('POLLENBEES_MODEL_NAME', 'custom_yolov8s_baseline')
+    ATTN         = os.environ.get('POLLENBEES_ATTN', 'none')   # none|cbam|botnet|cbam_botnet
+    VERSION      = os.environ.get('POLLENBEES_VERSION', 'm')   # n|s|m|l|x  (YOLOv8 scale)
+    _default_name = (f'custom_yolov8{VERSION}_baseline' if ATTN == 'none'
+                     else f'custom_yolov8{VERSION}_{ATTN}')
+    MODEL_NAME   = os.environ.get('POLLENBEES_MODEL_NAME', _default_name)
     RUN_ID       = os.environ.get('POLLENBEES_RUN_ID', datetime.now().strftime('%Y%m%d_%H%M%S'))
     EVAL_EVERY   = 1
-    STATS_CONF_THR = 0.25
+    STATS_CONF_THR = 0.5
     STATS_IOU_THR  = 0.50
-    SAVE_DIR     = os.path.join(DATASET_ROOT, 'runs', 'baseline')
-    RESULTS_DIR  = os.path.join(DATASET_ROOT, 'runs', 'results')
+    # Early stopping on pollenbee-weighted fitness (0.1*AP@0.5 + 0.9*AP@0.5:0.95
+    # over the pollenbee class), the same metric best.pt is selected by.
+    # PATIENCE=0 disables it. MIN_EPOCHS is a floor: the ~3% pollenbee class often
+    # sits at fitness=0 for many early epochs before it starts being detected, so
+    # we never stop before then or we'd kill the run during that plateau.
+    EARLY_STOP_PATIENCE   = int(os.environ.get('POLLENBEES_PATIENCE', 20))
+    EARLY_STOP_MIN_EPOCHS = int(os.environ.get('POLLENBEES_MIN_EPOCHS', 30))
+    # POLLENBEES_OUT sends checkpoints/CSVs somewhere persistent (e.g. a Drive
+    # path) while data can live on fast local disk. Defaults to DATASET_ROOT.
+    OUT_ROOT     = os.environ.get('POLLENBEES_OUT', DATASET_ROOT)
+    SAVE_DIR     = os.path.join(OUT_ROOT, 'runs', 'baseline')
+    RESULTS_DIR  = os.path.join(OUT_ROOT, 'runs', 'results')
     RESULTS_CSV  = os.path.join(RESULTS_DIR, f'{MODEL_NAME}_{RUN_ID}.csv')
     DEVICE       = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -787,14 +826,26 @@ def main():
     log.info('--- Val split ---')
     val_ds   = PollenBeeDataset(VAL_ROOT,   img_size=IMG_SIZE)
 
-    train_loader = DataLoader(
-        train_ds, batch_size=BATCH_SIZE, shuffle=True,
-        num_workers=4, pin_memory=True, collate_fn=collate_fn,
+    # num_workers via env (POLLENBEES_WORKERS). persistent_workers reuses the
+    # workers across epochs instead of re-spawning them every epoch — on Windows
+    # the per-epoch spawn/teardown churn eventually makes workers "exit
+    # unexpectedly" during a long run. Set POLLENBEES_WORKERS=0 for a worker-free
+    # (slower but bulletproof) run.
+    NUM_WORKERS = int(os.environ.get('POLLENBEES_WORKERS', 4))
+    # pin_memory defaults OFF on Windows: with num_workers>0 the pin-memory
+    # thread calls cudaHostRegister on the workers' shared-memory batches and
+    # can hit "CUDA error: resource already mapped" (cudaErrorAlreadyMapped),
+    # which crashes the run before epoch 1. Large 1280px batches make it worse.
+    # Set POLLENBEES_PIN=1 to re-enable if your setup tolerates it.
+    PIN_MEMORY = DEVICE == 'cuda' and os.environ.get('POLLENBEES_PIN', '0') == '1'
+    log.info(f'DataLoader workers: {NUM_WORKERS}  pin_memory: {PIN_MEMORY}')
+    loader_kwargs = dict(
+        batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
+        pin_memory=PIN_MEMORY, collate_fn=collate_fn,
+        persistent_workers=NUM_WORKERS > 0,
     )
-    val_loader = DataLoader(
-        val_ds, batch_size=BATCH_SIZE, shuffle=False,
-        num_workers=4, pin_memory=True, collate_fn=collate_fn,
-    )
+    train_loader = DataLoader(train_ds, shuffle=True, **loader_kwargs)
+    val_loader = DataLoader(val_ds, shuffle=False, **loader_kwargs)
 
     # ── Step 3: Model ─────────────────────────────────────────────────────
     # Import MyYolo from the file where you saved your notebook code.
@@ -803,11 +854,16 @@ def main():
     import yaml
     from utils import util
 
-    model = MyYolo(version='s', num_classes=2).to(DEVICE)
+    log.info(f'Model scale: yolov8{VERSION}   Attention mode: {ATTN}')
+    model = MyYolo(version=VERSION, num_classes=2, attn=ATTN, img_size=IMG_SIZE).to(DEVICE)
     log.info(f'Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M')
 
     with open('utils/args.yaml') as f:
         params = yaml.safe_load(f)
+    # Inject per-class GT counts from the TRAIN split so the loss can build
+    # effective-number class weights (only used when cls_effective_number is on).
+    params['class_counts'] = [train_ds.class_counts.get(i, 0) for i in range(len(CLASS_NAMES))]
+    log.info(f'Train class counts (for class weighting): {params["class_counts"]}')
     criterion = util.ComputeLoss(model, params)
 
     # ── Step 4: Optimiser + scheduler ────────────────────────────────────
@@ -822,13 +878,16 @@ def main():
     )
 
     # ── Step 5: Train ────────────────────────────────────────────────────
-    # Select best.pt by pollenbee F1, not overall mAP@0.50. Pollenbee is the
-    # ~3% minority class that matters for this dataset; picking on mAP@0.50
-    # rewards the majority class and can save a checkpoint that barely detects
-    # pollenbee (as happened in the earlier run — best mAP epoch had pollenbee F1 ~0.5).
+    # Select best.pt by pollenbee-weighted fitness (0.1*AP@0.5 + 0.9*AP@0.5:0.95
+    # on the pollenbee class), not overall mAP@0.50. Pollenbee is the ~3% minority
+    # class that matters for this dataset; picking on all-class mAP@0.50 rewards
+    # the majority class and can save a checkpoint that barely detects pollenbee
+    # (as happened in an earlier run — best mAP epoch had pollenbee F1 ~0.5). The
+    # fitness blend keeps that minority-class focus but is smoother than raw F1.
     POLLENBEE_ID = CLASS_MAP['pollenbee']
     history        = {'train_loss': [], 'val_metrics': []}
-    best_pollen_f1 = -1.0
+    best_fitness   = -1.0
+    epochs_no_improve = 0   # for early stopping
 
     for epoch in range(1, NUM_EPOCHS + 1):
         current_lr = scheduler.get_last_lr()[0]
@@ -849,6 +908,7 @@ def main():
             )
             map50 = metric_to_float(res['map_50'])
             pollen_f1 = res['class_stats'][POLLENBEE_ID]['f1']
+            fitness   = pollenbee_fitness(res, POLLENBEE_ID)
             metrics_row = build_metrics_row(
                 RUN_ID, MODEL_NAME, epoch, current_lr, train_loss,
                 res, STATS_CONF_THR, STATS_IOU_THR,
@@ -856,31 +916,81 @@ def main():
             append_metrics_csv(RESULTS_CSV, metrics_row, metric_fields)
             history['val_metrics'].append(metrics_row)
             log.info(f'Epoch {epoch} metrics appended → {RESULTS_CSV}')
+            log.info(f'Epoch {epoch} pollenbee fitness: {fitness:.4f}')
 
-            if pollen_f1 > best_pollen_f1:
-                best_pollen_f1 = pollen_f1
+            if fitness > best_fitness:
+                best_fitness = fitness
+                epochs_no_improve = 0
                 ckpt = os.path.join(SAVE_DIR, 'best.pt')
                 torch.save({
                     'epoch':        epoch,
                     'model':        model.state_dict(),
                     'optimizer':    optimizer.state_dict(),
+                    'box_loss':     criterion.box_loss.state_dict(),  # WIoU running_mean + class_weight
                     'map50':        map50,
                     'pollenbee_f1': pollen_f1,
+                    'fitness':      fitness,
                     'config': {
                         'model_name': MODEL_NAME,
                         'run_id': RUN_ID,
-                        'version': 's',
+                        'version': VERSION,
                         'img_size': IMG_SIZE,
                         'num_classes': 2,
                     },
                 }, ckpt)
-                log.info(f'New best saved → {ckpt}  (pollenbee F1={pollen_f1:.4f}, mAP@0.50={map50:.4f})')
+                log.info(
+                    f'New best saved → {ckpt}  (fitness={fitness:.4f}, '
+                    f'pollenbee F1={pollen_f1:.4f}, mAP@0.50={map50:.4f})'
+                )
+            else:
+                epochs_no_improve += 1
+                log.info(
+                    f'No pollenbee-fitness improvement for {epochs_no_improve}/{EARLY_STOP_PATIENCE} '
+                    f'epoch(s) (best={best_fitness:.4f})'
+                )
 
-    log.info(f'Training complete.  Best pollenbee F1: {best_pollen_f1:.4f}')
+            # Early stopping. Counts in eval-events; with EVAL_EVERY=1 that is epochs.
+            # best.pt already holds the best epoch, so stopping only saves compute —
+            # it never costs you the best model.
+            if (EARLY_STOP_PATIENCE > 0
+                    and epoch >= EARLY_STOP_MIN_EPOCHS
+                    and epochs_no_improve >= EARLY_STOP_PATIENCE):
+                log.info(
+                    f'Early stopping at epoch {epoch}: no pollenbee-fitness improvement for '
+                    f'{epochs_no_improve} epochs (best={best_fitness:.4f}).'
+                )
+                break
+
+    log.info(f'Training complete.  Best pollenbee fitness: {best_fitness:.4f}')
 
     import json as _json
     with open(os.path.join(SAVE_DIR, 'history.json'), 'w') as f:
         _json.dump(history, f, indent=2)
+
+    # ── Step 6: Final evaluation on the held-out TEST split ───────────────
+    # Load best.pt (selected by val pollenbee F1) so we report the chosen
+    # checkpoint, not whatever the last epoch happened to be.
+    best_ckpt = os.path.join(SAVE_DIR, 'best.pt')
+    if os.path.isdir(annotations_dir(TEST_ROOT)) and os.path.exists(best_ckpt):
+        log.info('--- Test split (final, using best.pt) ---')
+        model.load_state_dict(torch.load(best_ckpt, map_location=DEVICE)['model'])
+        test_ds     = PollenBeeDataset(TEST_ROOT, img_size=IMG_SIZE)
+        test_loader = DataLoader(
+            test_ds, batch_size=BATCH_SIZE, shuffle=False,
+            num_workers=4, pin_memory=PIN_MEMORY, collate_fn=collate_fn,
+        )
+        test_res = evaluate(
+            model, test_loader, DEVICE, img_size=IMG_SIZE,
+            stats_conf_thr=STATS_CONF_THR, stats_iou_thr=STATS_IOU_THR,
+        )
+        test_row = build_metrics_row(
+            RUN_ID, MODEL_NAME, 'test', '', '',
+            test_res, STATS_CONF_THR, STATS_IOU_THR,
+        )
+        append_metrics_csv(RESULTS_CSV, test_row, metric_fields)
+        log.info(f'Test metrics appended (epoch="test") → {RESULTS_CSV}')
+    else:
+        log.warning('Skipping test eval: test annotations or best.pt not found.')
 
 
 if __name__ == '__main__':

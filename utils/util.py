@@ -276,6 +276,71 @@ def compute_iou(box1, box2, eps=1e-7):
     return iou - (rho2 / c2 + v * alpha)  # CIoU
 
 
+def saf_siou_reg(pred_xyxy, gt_xyxy, C, T, theta=4.0, eps=1e-7):
+    """
+    SAF-SIoU regression cost (before WIoU focusing / per-anchor weighting).
+
+    Boxes are xyxy in INPUT-SCALE PIXELS (caller must convert from grid units),
+    because C and T are pixel-unit hyperparameters. Returns L_reg of shape [N, 1].
+
+    L_reg = (1 - lam) * L_siou + lam * (1 - NWD),  lam = exp(-sqrt(w_g*h_g)/T)
+    """
+    p_x1, p_y1, p_x2, p_y2 = pred_xyxy.chunk(4, -1)
+    g_x1, g_y1, g_x2, g_y2 = gt_xyxy.chunk(4, -1)
+
+    w_p = (p_x2 - p_x1).clamp(min=0)
+    h_p = (p_y2 - p_y1).clamp(min=0)
+    w_g = (g_x2 - g_x1).clamp(min=0)
+    h_g = (g_y2 - g_y1).clamp(min=0)
+    x_p, y_p = (p_x1 + p_x2) / 2, (p_y1 + p_y2) / 2
+    x_g, y_g = (g_x1 + g_x2) / 2, (g_y1 + g_y2) / 2
+
+    # IoU (scale-invariant, computed here to keep this self-contained)
+    inter = (p_x2.minimum(g_x2) - p_x1.maximum(g_x1)).clamp(0) * \
+            (p_y2.minimum(g_y2) - p_y1.maximum(g_y1)).clamp(0)
+    union = w_p * h_p + w_g * h_g - inter + eps
+    iou = inter / union
+
+    dx, dy = x_p - x_g, y_p - y_g
+    sigma = torch.sqrt(dx * dx + dy * dy + eps)
+
+    # enclosing box
+    c_w = p_x2.maximum(g_x2) - p_x1.minimum(g_x1)
+    c_h = p_y2.maximum(g_y2) - p_y1.minimum(g_y1)
+
+    # (1) corrected SIoU
+    # clamp strictly below 1: at a pure vertical/horizontal offset |dy|/sigma rounds
+    # to exactly 1.0 in float32, and arcsin has an infinite gradient there (-> NaN).
+    sin_alpha = (dy.abs() / (sigma + eps)).clamp(0, 1 - 1e-6)
+    lam_angle = torch.sin(2 * torch.arcsin(sin_alpha))
+    D = (1 - torch.exp(-(2 - lam_angle) * (dx / (c_w + eps)) ** 2)) + \
+        (1 - torch.exp(-(2 - lam_angle) * (dy / (c_h + eps)) ** 2))
+    om_w = (w_p - w_g).abs() / (torch.maximum(w_p, w_g) + eps)
+    om_h = (h_p - h_g).abs() / (torch.maximum(h_p, h_g) + eps)
+    omega = (1 - torch.exp(-om_w)) ** theta + (1 - torch.exp(-om_h)) ** theta
+    l_siou = 1 - iou + (D + omega) / 2
+
+    # (2) NWD (boxes as Gaussians)
+    w2sq = dx * dx + dy * dy + 0.25 * ((w_p - w_g) ** 2 + (h_p - h_g) ** 2)
+    nwd = torch.exp(-torch.sqrt(w2sq + eps) / C)
+
+    # (3) size gate + blend
+    lam = torch.exp(-torch.sqrt((w_g * h_g).clamp(min=0) + eps) / T)
+    return (1 - lam) * l_siou + lam * (1 - nwd)
+
+
+def effective_number_weights(counts, beta=0.999, eps=1e-8):
+    """
+    Class-balanced weights from the effective number of samples (Cui et al. 2019):
+        w_j = (1 - beta) / (1 - beta^{n_j}),  then normalized to mean 1.
+    counts: per-class GT instance counts. Returns a 1-D tensor of length len(counts).
+    """
+    counts = torch.as_tensor(counts, dtype=torch.float)
+    effective_num = 1.0 - torch.pow(beta, counts)
+    w = (1.0 - beta) / (effective_num + eps)
+    return w / w.mean().clamp(min=eps)
+
+
 def strip_optimizer(filename):
     x = torch.load(filename, map_location="cpu")
     x['model'].half()  # to FP16
@@ -442,6 +507,7 @@ class Assigner(torch.nn.Module):
             device = gt_bboxes.device
             return (torch.zeros_like(pd_bboxes).to(device),
                     torch.zeros_like(pd_scores).to(device),
+                    torch.zeros_like(pd_scores[..., 0]).to(device).long(),
                     torch.zeros_like(pd_scores[..., 0]).to(device))
 
         num_anchors = anc_points.shape[0]
@@ -516,7 +582,7 @@ class Assigner(torch.nn.Module):
         norm_align_metric = (align_metric * pos_overlaps / (pos_align_metrics + self.eps)).amax(-2).unsqueeze(-1)
         target_scores = target_scores * norm_align_metric
 
-        return target_bboxes, target_scores, fg_mask.bool()
+        return target_bboxes, target_scores, target_labels, fg_mask.bool()
 
 
 class QFL(torch.nn.Module):
@@ -557,15 +623,67 @@ class VFL(torch.nn.Module):
 
 
 class BoxLoss(torch.nn.Module):
-    def __init__(self, dfl_ch):
+    def __init__(self, dfl_ch, box_loss_type='ciou', saf_theta=4.0, saf_C=12.8,
+                 saf_T=32.0, saf_alpha_f=1.9, saf_delta=3.0, saf_momentum=0.999,
+                 class_weight=None, box_class_coupling=False):
         super().__init__()
         self.dfl_ch = dfl_ch
+        self.box_loss_type = str(box_loss_type).lower()
+        # SAF-SIoU hyperparameters (C, T in input-scale pixels)
+        self.saf_theta = saf_theta
+        self.saf_C = saf_C
+        self.saf_T = saf_T
+        self.saf_alpha_f = saf_alpha_f
+        self.saf_delta = saf_delta
+        self.saf_momentum = saf_momentum
+        # WIoU-v3 running mean of L_reg (buffer -> saved/loaded with state_dict)
+        self.register_buffer('running_mean', torch.tensor(1.0))
+        # optional per-class weighting of L_reg by the assigned class
+        self.box_class_coupling = bool(box_class_coupling) and class_weight is not None
+        if class_weight is not None:
+            self.register_buffer('class_weight', torch.as_tensor(class_weight, dtype=torch.float))
+        else:
+            self.class_weight = None
 
-    def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes, target_scores, target_scores_sum, fg_mask):
-        # IoU loss
+    def forward(self, pred_dist, pred_bboxes, anchor_points, target_bboxes,
+                target_scores, target_scores_sum, fg_mask, stride_tensor=None,
+                target_labels=None):
+        # per-anchor weight (unchanged: alignment score, applied on top of the box cost)
         weight = torch.masked_select(target_scores.sum(-1), fg_mask).unsqueeze(-1)
-        iou = compute_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask])
-        loss_box = ((1.0 - iou) * weight).sum() / target_scores_sum
+
+        if self.box_loss_type == 'saf_siou':
+            if stride_tensor is None:
+                raise ValueError('saf_siou box loss requires stride_tensor to convert to pixels')
+            # boxes at this site are xyxy in per-level GRID units; convert fg boxes to
+            # INPUT-SCALE PIXELS so the pixel-unit hyperparameters C, T are correct.
+            strides = stride_tensor.squeeze(-1).unsqueeze(0).expand(fg_mask.shape)
+            s_fg = strides[fg_mask].unsqueeze(-1)
+            pred_px = pred_bboxes[fg_mask] * s_fg
+            gt_px = target_bboxes[fg_mask] * s_fg
+
+            l_reg = saf_siou_reg(pred_px, gt_px, self.saf_C, self.saf_T, self.saf_theta)
+
+            # (optional) class-couple: scale each instance's L_reg by w of its assigned
+            # class BEFORE the focusing factor.
+            if self.box_class_coupling and target_labels is not None:
+                cls_fg = target_labels[fg_mask].long()
+                l_reg = l_reg * self.class_weight.to(l_reg.dtype)[cls_fg].unsqueeze(-1)
+
+            # (4) WIoU-v3 dynamic non-monotonic focusing (r is detached; grad flows via l_reg)
+            eps = 1e-7
+            beta = l_reg.detach() / (self.running_mean.to(l_reg.dtype) + eps)
+            r = beta / (self.saf_delta * self.saf_alpha_f ** (beta - self.saf_delta))
+            # update running mean only in training with grad enabled (never under no_grad/eval)
+            if self.training and torch.is_grad_enabled():
+                with torch.no_grad():
+                    self.running_mean.mul_(self.saf_momentum).add_(
+                        (1 - self.saf_momentum) * l_reg.detach().mean())
+
+            loss_box = (r * l_reg * weight).sum() / target_scores_sum
+        else:
+            # CIoU loss (original)
+            iou = compute_iou(pred_bboxes[fg_mask], target_bboxes[fg_mask])
+            loss_box = ((1.0 - iou) * weight).sum() / target_scores_sum
 
         # DFL loss
         a, b = target_bboxes.chunk(2, -1)
@@ -605,21 +723,49 @@ class ComputeLoss:
         self.reg_max = m.ch
         self.device = device
 
-        self.box_loss = BoxLoss(m.ch - 1).to(device)
+        # ── Per-class weight vector (length nc, or None) ──────────────────────
+        # cls_effective_number (opt-in, default off): class-balanced weights from
+        # the effective number of samples, using per-class GT counts injected as
+        # params['class_counts']; falls back to uniform if counts are unavailable.
+        # Otherwise use the manual cls_pos_weight if provided.
+        self.cls_effective_number = bool(params.get('cls_effective_number', False))
+        class_weight = None
+        if self.cls_effective_number:
+            counts = params.get('class_counts')
+            if counts is not None and len(counts) == self.nc:
+                class_weight = effective_number_weights(
+                    counts, beta=float(params.get('cls_effective_number_beta', 0.999))
+                ).to(device)
+            else:
+                class_weight = torch.ones(self.nc, device=device)  # fallback: uniform
+        else:
+            cls_pos_weight = params.get('cls_pos_weight')
+            if cls_pos_weight is not None:
+                cpw = torch.tensor(cls_pos_weight, dtype=torch.float, device=device)
+                if cpw.numel() != self.nc:
+                    raise ValueError(f'cls_pos_weight must have {self.nc} values, got {cpw.numel()}')
+                class_weight = cpw
+
+        self.box_loss = BoxLoss(
+            m.ch - 1,
+            box_loss_type=str(params.get('box_loss_type', 'ciou')).lower(),
+            saf_theta=float(params.get('saf_theta', 4.0)),
+            saf_C=float(params.get('saf_C', 12.8)),
+            saf_T=float(params.get('saf_T', 32.0)),
+            saf_alpha_f=float(params.get('saf_alpha_f', 1.9)),
+            saf_delta=float(params.get('saf_delta', 3.0)),
+            saf_momentum=float(params.get('saf_momentum', 0.999)),
+            class_weight=class_weight,
+            box_class_coupling=bool(params.get('box_class_coupling', False)),
+        ).to(device)
 
         self.cls_loss_type = str(params.get('cls_loss_type', 'bce')).lower()
-        self.cls_pos_weight = None
-        cls_pos_weight = params.get('cls_pos_weight')
-        if cls_pos_weight is not None:
-            cls_pos_weight = torch.tensor(cls_pos_weight, dtype=torch.float, device=device)
-            if cls_pos_weight.numel() != self.nc:
-                raise ValueError(f'cls_pos_weight must have {self.nc} values, got {cls_pos_weight.numel()}')
-            self.cls_pos_weight = cls_pos_weight.view(1, 1, self.nc)
+        self.cls_pos_weight = class_weight.view(1, 1, self.nc) if class_weight is not None else None
 
         if self.cls_loss_type == 'bce':
             cls_loss_kwargs = {'reduction': 'none'}
-            if cls_pos_weight is not None:
-                cls_loss_kwargs['pos_weight'] = cls_pos_weight
+            if class_weight is not None:
+                cls_loss_kwargs['pos_weight'] = class_weight
             self.cls_loss = torch.nn.BCEWithLogitsLoss(**cls_loss_kwargs)
         elif self.cls_loss_type == 'vfl':
             self.cls_loss = VFL(
@@ -688,7 +834,7 @@ class ComputeLoss:
         assigned_targets = self.assigner(pred_scores.detach().sigmoid(),
                                          (pred_bboxes.detach() * stride_tensor).type(gt_bboxes.dtype),
                                          anchor_points * stride_tensor, gt_labels, gt_bboxes, mask_gt)
-        target_bboxes, target_scores, fg_mask = assigned_targets
+        target_bboxes, target_scores, target_labels, fg_mask = assigned_targets
 
         target_scores_sum = target_scores.sum().clamp(min=1)
 
@@ -709,7 +855,8 @@ class ComputeLoss:
                                                anchor_points,
                                                target_bboxes,
                                                target_scores,
-                                               target_scores_sum, fg_mask)
+                                               target_scores_sum, fg_mask,
+                                               stride_tensor, target_labels)
 
         loss_box *= self.params['box']  # box gain
         loss_cls *= self.params['cls']  # cls gain

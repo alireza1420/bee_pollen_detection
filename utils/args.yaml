@@ -12,13 +12,32 @@ warmup_epochs: 3.00000
 box: 7.500000000000000
 cls: 0.500000000000000
 dfl: 1.500000000000000
+
+# Box regression loss: ciou | saf_siou
+box_loss_type: saf_siou
+saf_theta: 4          # Omega exponent in the SIoU shape cost
+saf_C: 12.8           # NWD scale, input-scale pixels
+saf_T: 32.0           # size-gate threshold, input-scale pixels
+saf_alpha_f: 1.9      # WIoU-v3 focusing base
+saf_delta: 3.0        # WIoU-v3 focusing delta
+saf_momentum: 0.999   # running-mean momentum for L_reg
+
 cls_loss_type: vfl
 vfl_alpha: 0.75
 vfl_gamma: 2.0
 vfl_iou_weighted: true
 cls_pos_weight:
   - 1.0
-  - 4.0
+  - 2.0
+
+# Class-balanced weighting via effective number of samples (Cui et al. 2019).
+# Opt-in, default off. When on, per-class weights are computed from the train-set
+# GT counts (injected by the pipeline) and OVERRIDE cls_pos_weight above.
+cls_effective_number: false
+cls_effective_number_beta: 0.999
+# Optionally scale each instance's SAF-SIoU L_reg by its assigned class weight
+# (reuses the same weights; requires box_loss_type: saf_siou). Default off.
+box_class_coupling: false
 
 hsv_h: 0.0150000000000
 hsv_s: 0.7000000000000

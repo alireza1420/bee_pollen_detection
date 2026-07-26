@@ -82,6 +82,38 @@ Key components:
 - Strides: `8`, `16`, `32`
 - Distribution Focal Loss box regression
 - Two detection classes
+- Optional attention modules (CBAM and/or a BoTNet MHSA stack), selectable per run
+
+### Attention modes
+
+The backbone supports four attention configurations, selected with the
+`POLLENBEES_ATTN` environment variable (see Training). This makes the
+baseline-vs-attention ablation reproducible from a single codebase:
+
+| `POLLENBEES_ATTN` | CBAM (P3/P4/P5) | P5 block | ~Params (s) |
+| --- | --- | --- | ---: |
+| `none` (default) | off | C2f | 11.14M |
+| `cbam` | on | C2f | 11.22M |
+| `botnet` | off | BoTNet MHSA stack | 9.85M |
+| `cbam_botnet` | on | BoTNet MHSA stack | 9.94M |
+
+- CBAM is applied to the three feature maps feeding the neck; it is
+  shape-preserving, so the neck and head are unchanged.
+- The P5 stage uses either the standard C2f block or a shape-preserving
+  BoTNet (Bottleneck Transformer / MHSA) stack. The BoTNet stack bakes in
+  `fmap_size=20`, which assumes the default `640x640` input (P5 = 640/32 = 20).
+  Changing the image size requires updating that value in `yolov8_model.py`.
+- Note that BoTNet replaces C2f with a lighter block, so the attention
+  variants have fewer parameters than the baseline, not more.
+
+A self-check for all four modes is built into the model file:
+
+```powershell
+python yolov8_model.py
+```
+
+It confirms every mode builds, forwards a `640x640` tensor, and that the
+toggle actually changes the model.
 
 Use this wording in reports:
 
@@ -146,9 +178,43 @@ Per-epoch comparison metrics are saved as:
 runs/results/custom_yolov8s_baseline_<run_id>.csv
 ```
 
-For model comparisons, set a model name before training:
+### Selecting an attention variant
+
+Pick the backbone configuration with `POLLENBEES_ATTN` before training. Each
+variant writes a separately named CSV, so the four ablation runs stay
+distinct and correctly labeled:
 
 ```powershell
+$env:POLLENBEES_ATTN = "none"          # baseline: C2f at P5, no CBAM
+$env:POLLENBEES_ATTN = "cbam"          # CBAM only
+$env:POLLENBEES_ATTN = "botnet"        # BoTNet MHSA only
+$env:POLLENBEES_ATTN = "cbam_botnet"   # combined
+python phase1_pipeline_v2.py
+```
+
+With no `POLLENBEES_ATTN` set, the default is `none` (the plain baseline).
+
+### Training environment variables
+
+All training customization is done through environment variables. Nothing
+below needs a code edit:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `POLLENBEES_ATTN` | `none` | Attention mode: `none` / `cbam` / `botnet` / `cbam_botnet` |
+| `POLLENBEES_EPOCHS` | `100` | Number of training epochs |
+| `POLLENBEES_MODEL_NAME` | derived from `POLLENBEES_ATTN` | Run/model name used for the results CSV |
+| `POLLENBEES_RUN_ID` | current timestamp | Run ID suffix on the CSV filename |
+
+The default model name is derived from the attention mode:
+`none` maps to `custom_yolov8s_baseline`, and every other mode maps to
+`custom_yolov8s_<attn>` (for example `custom_yolov8s_cbam_botnet`). Set
+`POLLENBEES_MODEL_NAME` only to override that.
+
+For a custom-named comparison run:
+
+```powershell
+$env:POLLENBEES_ATTN = "cbam_botnet"
 $env:POLLENBEES_MODEL_NAME = "my_model_variant"
 python phase1_pipeline_v2.py
 ```
@@ -158,6 +224,10 @@ This produces:
 ```text
 runs/results/my_model_variant_<run_id>.csv
 ```
+
+Hyperparameters not exposed as environment variables (image size `640`,
+batch size `16`, optimizer, scheduler, learning rate) are defined near the
+top of the `main` block in `phase1_pipeline_v2.py`.
 
 ## Evaluation
 
@@ -254,11 +324,13 @@ cls_pos_weight:
 
 This uses Varifocal Loss for class prediction and gives positive `pollenbee` targets a smaller extra weight than the earlier BCE experiment. The `4.0` weight is intentionally conservative so the model is encouraged to learn pollenbee without immediately producing many false pollenbee detections.
 
-Main training hyperparameters are currently defined in `phase1_pipeline_v2.py`, including:
+The attention mode, epoch count, and run naming are set with environment
+variables (see the Training section). The remaining training hyperparameters
+are defined near the top of the `main` block in `phase1_pipeline_v2.py`:
 
 - image size: `640`
 - batch size: `16`
-- epochs: `100`
+- epochs: `100` (override with `POLLENBEES_EPOCHS`)
 - optimizer: SGD
 - scheduler: cosine annealing
 

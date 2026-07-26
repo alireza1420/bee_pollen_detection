@@ -3,3 +3,4 @@ opencv-python==4.12.0.88
 PyYAML==6.0.2
 torchmetrics[detection]==1.7.4
 pycocotools==2.0.10
+einops==0.8.2
