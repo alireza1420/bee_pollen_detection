@@ -14,8 +14,8 @@ cls: 0.500000000000000
 dfl: 1.500000000000000
 
 # Box regression loss: ciou | saf_siou
-# abl_baseline (row 0): stock CIoU — SAF-SIoU off
-box_loss_type: ciou
+# abl_saf (row 3): SAF-SIoU ON — the single delta vs baseline's ciou
+box_loss_type: saf_siou
 saf_theta: 4          # Omega exponent in the SIoU shape cost
 saf_C: 12.8           # NWD scale, input-scale pixels
 saf_T: 32.0           # size-gate threshold, input-scale pixels
