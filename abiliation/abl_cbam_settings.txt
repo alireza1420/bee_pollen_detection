@@ -5,7 +5,7 @@ Study    : VnPollenBee ablation (abiliation/study_specifications.md)
 Purpose  : CBAM alone — measure the isolated effect of CBAM
            attention against the stock baseline (row 0).
 Branch   : run/abl_cbam
-Commit   : e3856ff
+Commit   : PENDING
 Date     : 2026-07-27
 Seed     : 42
 
@@ -77,11 +77,19 @@ python phase1_pipeline_v2.py
 ----------------------------------------------------------------
 RESULTS (fill in after the run)
 ----------------------------------------------------------------
-GPU / runtime         : ................
-Total / best epoch    : ................
-Pollen AP@0.5:0.95    : ................   (primary ranking metric)
-Pollen AP@0.5         : ................
-Pollen P / R / F1     : ................
-Overall mAP@0.5       : ................
-Overall mAP@0.5:0.95  : ................
-Notes                 : ................
+GPU / runtime         : (fill from Colab)
+Total / best epoch    : 100 / 87
+run_id                : 20260727_131559
+Pollen AP@0.5:0.95    : val 0.6743 (ranking) | test 0.7138   (primary ranking metric)
+Pollen AP@0.5         : val 0.9179 | test 0.9518
+Pollen P / R / F1     : val 0.9435 / 0.8697 / 0.9051 | test 0.9913 / 0.8976 / 0.9421
+Pollen TP/FP/FN (test): 114 / 1 / 13   (MR 0.102, FAR 0.009)
+Overall mAP@0.5       : val 0.9522 | test 0.9702
+Overall mAP@0.5:0.95  : val 0.7569 | test 0.7839
+Non-pollen F1 (guard) : val 0.9853 | test 0.9857   (majority class not regressed)
+Notes                 : Rank on VAL per §8. Δ vs baseline on val AP@0.5:0.95 =
+                        +0.0023 — inside §7 noise floor (single seed), so CBAM
+                        alone is not a significant gain on the ranking metric.
+                        Test AP +0.0148 / F1 +0.0227 come almost entirely from
+                        FP 7->1; test set is sealed until the final model (§8.2),
+                        report as informational only.

@@ -6,4 +6,4 @@ test row after the final evaluation.
 | run_name | branch | commit SHA | seed | epochs | best epoch | pollen AP@0.5:0.95 | pollen F1 | notes |
 |---|---|---|---|---|---|---|---|---|
 | abl_baseline | run/abl_baseline | bc57176 | 42 | 100 | 78 | 0.699 | 0.919 | stock YOLOv8m: attn=none, CIoU, stock BCE. Val (ranking, §8): AP@0.5:0.95 0.672, F1 0.896 |
-| abl_cbam | run/abl_cbam | e3856ff | 42 | 100 | | | | row 1: CBAM alone (POLLENBEES_ATTN=cbam), CIoU, stock BCE — only delta vs baseline |
+| abl_cbam | run/abl_cbam | e3856ff | 42 | 100 | 87 | 0.714 | 0.942 | row 1: CBAM alone (POLLENBEES_ATTN=cbam), CIoU, stock BCE — only delta vs baseline. Val (ranking, §8): AP@0.5:0.95 0.674, F1 0.905 — +0.002 AP vs baseline, within §7 noise floor. Test gains (AP +0.015, F1 +0.023) driven by FP 7→1 |
