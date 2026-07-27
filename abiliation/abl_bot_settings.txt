@@ -6,7 +6,7 @@ Purpose  : BoT alone — measure the isolated effect of the
            Bottleneck-Transformer P5 stage against the stock
            baseline (row 0).
 Branch   : run/abl_bot
-Commit   : PENDING
+Commit   : 1e17353
 Date     : 2026-07-27
 Seed     : 42
 
