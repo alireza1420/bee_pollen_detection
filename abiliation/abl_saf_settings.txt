@@ -6,7 +6,7 @@ Purpose  : SAF-SIoU alone — measure the isolated effect of the
            composite SAF-SIoU box loss (SIoU + NWD gate + WIoU-v3
            focusing) against the stock CIoU baseline (row 0).
 Branch   : run/abl_saf
-Commit   : PENDING
+Commit   : 2503504
 Date     : 2026-07-27
 Seed     : 42
 
