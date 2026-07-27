@@ -96,14 +96,23 @@ args.yaml box_loss_type: saf_siou in the clone).
 ----------------------------------------------------------------
 RESULTS (fill in after the run)
 ----------------------------------------------------------------
-GPU / runtime         : ................
-Total / best epoch    : ................
-run_id                : ................
-Pollen AP@0.5:0.95    : ................   (primary ranking metric, VAL)
-Pollen AP@0.5         : ................
-Pollen P / R / F1     : ................
-Pollen TP/FP/FN (val) : ................   (MR, FAR)
-Overall mAP@0.5       : ................
-Overall mAP@0.5:0.95  : ................
-Non-pollen F1 (guard) : ................
-Notes                 : ................
+GPU / runtime         : (fill from Colab)
+Total / best epoch    : 100 / 79
+run_id                : 20260727_194110
+Pollen AP@0.5:0.95    : val 0.6799 (ranking) | test 0.7163   (primary ranking metric, VAL)
+Pollen AP@0.5         : val 0.9218 | test (see CSV)
+Pollen P / R / F1     : val 0.9379 / 0.8860 / 0.9112 | test F1 0.9482
+Pollen TP/FP/FN (val) : 272 / 18 / 35   (MR 0.114, FAR 0.062)
+Overall mAP@0.5       : val 0.9546
+Overall mAP@0.5:0.95  : val 0.7599
+Non-pollen F1 (guard) : val 0.9838   (majority class not regressed)
+Notes                 : Rank on VAL per §8. Val AP@0.5:0.95 0.6799 = +0.0079
+                        over baseline — below the §7 noise floor (0.01-0.02),
+                        single seed, so not yet significant. But the CLEANEST
+                        profile of rows 1-3: recall 0.857->0.886 (catches more
+                        pollen) with precision essentially held (0.939->0.938,
+                        FAR 0.061->0.062), so MR drops 0.143->0.114. Contrast
+                        BoT, which bought recall by spending precision. F1 0.911
+                        > BoT's 0.896 even though BoT leads on AP (F1@0.5 vs AP
+                        divergence again, §8.3 — rank on AP). Strongest test row
+                        so far (AP 0.716, FP 5 / FN 8) but test sealed (§8.2).
