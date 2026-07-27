@@ -5,4 +5,4 @@ test row after the final evaluation.
 
 | run_name | branch | commit SHA | seed | epochs | best epoch | pollen AP@0.5:0.95 | pollen F1 | notes |
 |---|---|---|---|---|---|---|---|---|
-| abl_baseline | run/abl_baseline | ff947fa | 42 | 100 | | | | stock YOLOv8m: attn=none, CIoU, unweighted VFL |
+| abl_baseline | run/abl_baseline | bc57176 | 42 | 100 | | | | stock YOLOv8m: attn=none, CIoU, BCE; aug HSV+flip |
