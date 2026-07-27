@@ -1,0 +1,101 @@
+================================================================
+ABLATION RUN SETTINGS — abl_bot (row 2)
+================================================================
+Study    : VnPollenBee ablation (abiliation/study_specifications.md)
+Purpose  : BoT alone — measure the isolated effect of the
+           Bottleneck-Transformer P5 stage against the stock
+           baseline (row 0).
+Branch   : run/abl_bot
+Commit   : PENDING
+Date     : 2026-07-27
+Seed     : 42
+
+----------------------------------------------------------------
+COMPONENTS (protocol §2/§3)
+----------------------------------------------------------------
+CBAM      : OFF   (cbam modules removed — Identity)
+BoT       : ON    (POLLENBEES_ATTN=botnet — final backbone stage
+                   P5: standard C2f -> BoTNet stack, MHSA + relative
+                   position embedding)
+SAF-SIoU  : OFF   (box_loss_type: ciou — stock CIoU + DFL)
+VFL-w     : OFF   (cls_loss_type: bce — stock BCE classification loss)
+
+Config delta vs abl_baseline: POLLENBEES_ATTN none -> botnet.
+No code or args.yaml changes — the botnet path already exists in
+the committed code (attn mode toggle, commit 36285f4); code state
+identical to the baseline branch (c1e55d1).
+
+Dependency note: BoT needs einops (requirements.txt line 6,
+einops==0.8.2). Present in the Colab requirements; only the local
+.venv lacked it. Baseline/CBAM did not exercise this import.
+
+----------------------------------------------------------------
+ARCHITECTURE
+----------------------------------------------------------------
+Model            : YOLOv8m (custom re-implementation, MyYolo)
+Classes          : 2 (nonpollenbee=0, pollenbee=1)
+Pretrained       : none — trained from scratch
+Input resolution : 1280 x 1280 (direct resize, no letterboxing)
+Params           : 22.58M (BoT P5 is lighter than the C2f it replaces;
+                   baseline none=25.86M, cbam=25.99M) — verified via
+                   CPU build+forward at 1280, out (1,6,33600)
+
+----------------------------------------------------------------
+TRAINING (invariants — identical for every ablation row)
+----------------------------------------------------------------
+Epochs           : 100 fixed
+Early stopping   : OFF (POLLENBEES_PATIENCE=0)
+Batch size       : 4
+Optimizer        : SGD, Nesterov, momentum 0.937, weight decay 5e-4
+LR schedule      : 0.01 -> 1e-4, cosine annealing over 100 epochs
+Gradient clip    : max-norm 10
+Loss gains       : box 7.5 / cls 0.5 / dfl 1.5
+
+Augmentation (train split only, scale-preserving):
+  HSV jitter     : h 0.015 / s 0.7 / v 0.4
+  Horizontal flip: p 0.5
+  Vertical flip  : p 0.0
+  Mosaic/affine  : OFF for all rows (object-size statistics must stay
+                   matched to evaluation)
+Val/test         : never augmented
+
+----------------------------------------------------------------
+MODEL SELECTION + EVALUATION (invariants)
+----------------------------------------------------------------
+best.pt selected : pollen fitness = 0.1*AP@0.5 + 0.9*AP@0.5:0.95,
+                   pollenbee class only, on validation every epoch
+mAP              : torchmetrics, IoU 0.50:0.95, NMS conf 0.001 / IoU 0.70
+P/R/F1 stats     : conf 0.5, IoU 0.5, greedy one-to-one matching
+Test set         : evaluated once, with best.pt, at end of run
+                   (sealed until final model per §8.2 — informational)
+Outputs          : CSV runs/results/abl_bot_<runid>.csv
+                   checkpoints runs/abl_bot_<runid>/
+
+----------------------------------------------------------------
+LAUNCH (Colab)
+----------------------------------------------------------------
+git clone -b run/abl_bot <repo> ; verify commit above
+
+POLLENBEES_DATA       = /content/pollenbees_dataset
+POLLENBEES_OUT        = /content/drive/MyDrive/Alireza/Bee
+POLLENBEES_WORKERS    = 2
+POLLENBEES_PIN        = 1
+POLLENBEES_ATTN       = botnet
+POLLENBEES_MODEL_NAME = abl_bot
+POLLENBEES_PATIENCE   = 0
+python phase1_pipeline_v2.py
+
+----------------------------------------------------------------
+RESULTS (fill in after the run)
+----------------------------------------------------------------
+GPU / runtime         : ................
+Total / best epoch    : ................
+run_id                : ................
+Pollen AP@0.5:0.95    : ................   (primary ranking metric, VAL)
+Pollen AP@0.5         : ................
+Pollen P / R / F1     : ................
+Pollen TP/FP/FN (val) : ................   (MR, FAR)
+Overall mAP@0.5       : ................
+Overall mAP@0.5:0.95  : ................
+Non-pollen F1 (guard) : ................
+Notes                 : ................
