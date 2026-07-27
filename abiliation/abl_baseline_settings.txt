@@ -1,0 +1,82 @@
+================================================================
+ABLATION RUN SETTINGS — abl_baseline (row 0)
+================================================================
+Study    : VnPollenBee ablation (abiliation/study_specifications.md)
+Purpose  : Stock YOLOv8m reference — every proposed component OFF.
+           All other rows are measured against this run.
+Branch   : run/abl_baseline
+Commit   : bc57176
+Date     : 2026-07-27
+Seed     : 42
+
+----------------------------------------------------------------
+COMPONENTS (protocol §2/§3)
+----------------------------------------------------------------
+CBAM      : OFF   (POLLENBEES_ATTN=none — modules built as Identity)
+BoT       : OFF   (final backbone stage keeps standard C2f)
+SAF-SIoU  : OFF   (box_loss_type: ciou — stock CIoU + DFL)
+VFL-w     : OFF   (cls_loss_type: bce — stock BCE classification loss)
+
+----------------------------------------------------------------
+ARCHITECTURE
+----------------------------------------------------------------
+Model            : YOLOv8m (custom re-implementation, MyYolo)
+Classes          : 2 (nonpollenbee=0, pollenbee=1)
+Pretrained       : none — trained from scratch
+Input resolution : 1280 x 1280 (direct resize, no letterboxing)
+
+----------------------------------------------------------------
+TRAINING (invariants — identical for every ablation row)
+----------------------------------------------------------------
+Epochs           : 100 fixed
+Early stopping   : OFF (POLLENBEES_PATIENCE=0)
+Batch size       : 4
+Optimizer        : SGD, Nesterov, momentum 0.937, weight decay 5e-4
+LR schedule      : 0.01 -> 1e-4, cosine annealing over 100 epochs
+Gradient clip    : max-norm 10
+Loss gains       : box 7.5 / cls 0.5 / dfl 1.5
+
+Augmentation (train split only, scale-preserving):
+  HSV jitter     : h 0.015 / s 0.7 / v 0.4
+  Horizontal flip: p 0.5
+  Vertical flip  : p 0.0
+  Mosaic/affine  : OFF for all rows (object-size statistics must stay
+                   matched to evaluation)
+Val/test         : never augmented
+
+----------------------------------------------------------------
+MODEL SELECTION + EVALUATION (invariants)
+----------------------------------------------------------------
+best.pt selected : pollen fitness = 0.1*AP@0.5 + 0.9*AP@0.5:0.95,
+                   pollenbee class only, on validation every epoch
+mAP              : torchmetrics, IoU 0.50:0.95, NMS conf 0.001 / IoU 0.70
+P/R/F1 stats     : conf 0.5, IoU 0.5, greedy one-to-one matching
+Test set         : evaluated once, with best.pt, at end of run
+Outputs          : CSV runs/results/abl_baseline_<runid>.csv
+                   checkpoints runs/abl_baseline_<runid>/
+
+----------------------------------------------------------------
+LAUNCH (Colab)
+----------------------------------------------------------------
+git clone -b run/abl_baseline <repo> ; verify commit bc57176
+
+POLLENBEES_DATA       = /content/pollenbees_dataset
+POLLENBEES_OUT        = /content/drive/MyDrive/Alireza/Bee
+POLLENBEES_WORKERS    = 2
+POLLENBEES_PIN        = 1
+POLLENBEES_ATTN       = none
+POLLENBEES_MODEL_NAME = abl_baseline
+POLLENBEES_PATIENCE   = 0
+python phase1_pipeline_v2.py
+
+----------------------------------------------------------------
+RESULTS (fill in after the run)
+----------------------------------------------------------------
+GPU / runtime         : ................
+Total / best epoch    : ................
+Pollen AP@0.5:0.95    : ................   (primary ranking metric)
+Pollen AP@0.5         : ................
+Pollen P / R / F1     : ................
+Overall mAP@0.5       : ................
+Overall mAP@0.5:0.95  : ................
+Notes                 : ................
