@@ -1,0 +1,114 @@
+================================================================
+ABLATION RUN SETTINGS — abl_vflw (row 4)
+================================================================
+Study    : VnPollenBee ablation (abiliation/study_specifications.md)
+Purpose  : Weighted VFL alone — measure the isolated effect of the
+           classification bundle (Varifocal loss + minority-class
+           weighting) against the stock BCE baseline (row 0).
+           Per §2 this row measures VFL + weighting together, not
+           the weighting in isolation.
+Branch   : run/abl_vflw
+Commit   : PENDING
+Date     : 2026-07-28
+Seed     : 42
+
+----------------------------------------------------------------
+COMPONENTS (protocol §2/§3)
+----------------------------------------------------------------
+CBAM      : OFF   (POLLENBEES_ATTN=none)
+BoT       : OFF   (POLLENBEES_ATTN=none — final stage keeps C2f)
+SAF-SIoU  : OFF   (box_loss_type: ciou — stock CIoU + DFL; row 3's
+                   saf_siou reverted so box regression = baseline)
+VFL-w     : ON    (cls_loss_type: vfl, cls_pos_weight: [1.0, 2.0] —
+                   Varifocal loss, pollenbee minority class weighted 2x)
+
+Config delta vs abl_baseline: cls_loss_type bce -> vfl AND
+cls_pos_weight [1.0,1.0] -> [1.0,2.0]. Both are the SAME factor
+(the VFL-w bundle, §2), so this is still one-factor-per-row.
+box_loss_type stays ciou (= baseline), attn stays none.
+utils/args.yaml edit — no code change.
+
+VFL hyperparameters (active only under cls_loss_type: vfl):
+  vfl_alpha 0.75  |  vfl_gamma 2.0  |  vfl_iou_weighted true
+cls_effective_number: false (manual cls_pos_weight is used, not
+  effective-number weighting — the [1.0,2.0] above is authoritative)
+
+----------------------------------------------------------------
+ARCHITECTURE
+----------------------------------------------------------------
+Model            : YOLOv8m (custom re-implementation, MyYolo)
+Classes          : 2 (nonpollenbee=0, pollenbee=1)
+Pretrained       : none — trained from scratch
+Input resolution : 1280 x 1280 (direct resize, no letterboxing)
+Params           : 25.86M (stock — VFL-w is loss-only, no param change)
+
+De-risk (local): weighted-VFL loss verified end-to-end — forward+
+backward run, gradients flow, cls_pos_weight tensor resolves to
+[1.0, 2.0] (pollenbee idx1 = 2x), box loss confirmed CIoU (SAF off).
+Checked on CPU.
+
+----------------------------------------------------------------
+TRAINING (invariants — identical for every ablation row)
+----------------------------------------------------------------
+Epochs           : 100 fixed
+Early stopping   : OFF (POLLENBEES_PATIENCE=0)
+Batch size       : 4
+Optimizer        : SGD, Nesterov, momentum 0.937, weight decay 5e-4
+LR schedule      : 0.01 -> 1e-4, cosine annealing over 100 epochs
+Gradient clip    : max-norm 10
+Loss gains       : box 7.5 / cls 0.5 / dfl 1.5
+
+Augmentation (train split only, scale-preserving):
+  HSV jitter     : h 0.015 / s 0.7 / v 0.4
+  Horizontal flip: p 0.5
+  Vertical flip  : p 0.0
+  Mosaic/affine  : OFF for all rows (object-size statistics must stay
+                   matched to evaluation)
+Val/test         : never augmented
+
+----------------------------------------------------------------
+MODEL SELECTION + EVALUATION (invariants)
+----------------------------------------------------------------
+best.pt selected : pollen fitness = 0.1*AP@0.5 + 0.9*AP@0.5:0.95,
+                   pollenbee class only, on validation every epoch
+mAP              : torchmetrics, IoU 0.50:0.95, NMS conf 0.001 / IoU 0.70
+P/R/F1 stats     : conf 0.5, IoU 0.5, greedy one-to-one matching
+Test set         : evaluated once, with best.pt, at end of run
+                   (sealed until final model per §8.2 — informational)
+Outputs          : CSV runs/results/abl_vflw_<runid>.csv
+                   checkpoints runs/abl_vflw_<runid>/
+
+----------------------------------------------------------------
+LAUNCH (Colab)
+----------------------------------------------------------------
+git clone -b run/abl_vflw <repo> ; verify commit above
+
+POLLENBEES_DATA       = /content/pollenbees_dataset
+POLLENBEES_OUT        = /content/drive/MyDrive/Alireza/Bee
+POLLENBEES_WORKERS    = 2
+POLLENBEES_PIN        = 1
+POLLENBEES_ATTN       = none
+POLLENBEES_MODEL_NAME = abl_vflw
+POLLENBEES_PATIENCE   = 0
+python phase1_pipeline_v2.py
+
+Clone sanity (config is in args.yaml, not env vars — verify it):
+  grep -n "^cls_loss_type"  utils/args.yaml   -> vfl
+  grep -A2 "^cls_pos_weight" utils/args.yaml   -> 1.0 then 2.0
+  grep -n "^box_loss_type"  utils/args.yaml   -> ciou (SAF must be OFF)
+Log must show "Attention mode: none", "Parameters: 25.86M".
+
+----------------------------------------------------------------
+RESULTS (fill in after the run)
+----------------------------------------------------------------
+GPU / runtime         : ................
+Total / best epoch    : ................
+run_id                : ................
+Pollen AP@0.5:0.95    : ................   (primary ranking metric, VAL)
+Pollen AP@0.5         : ................
+Pollen P / R / F1     : ................
+Pollen TP/FP/FN (val) : ................   (MR, FAR)
+Overall mAP@0.5       : ................
+Overall mAP@0.5:0.95  : ................
+Non-pollen F1 (guard) : ................
+Notes                 : ................

@@ -14,8 +14,8 @@ cls: 0.500000000000000
 dfl: 1.500000000000000
 
 # Box regression loss: ciou | saf_siou
-# abl_saf (row 3): SAF-SIoU ON — the single delta vs baseline's ciou
-box_loss_type: saf_siou
+# abl_vflw (row 4): box back to stock CIoU (SAF reverted) — this row's delta is on cls
+box_loss_type: ciou
 saf_theta: 4          # Omega exponent in the SIoU shape cost
 saf_C: 12.8           # NWD scale, input-scale pixels
 saf_T: 32.0           # size-gate threshold, input-scale pixels
@@ -23,14 +23,15 @@ saf_alpha_f: 1.9      # WIoU-v3 focusing base
 saf_delta: 3.0        # WIoU-v3 focusing delta
 saf_momentum: 0.999   # running-mean momentum for L_reg
 
-# abl_baseline (row 0): stock BCE classification loss (VFL-w component off)
-cls_loss_type: bce
+# abl_vflw (row 4): weighted Varifocal loss ON — cls_loss_type vfl +
+# cls_pos_weight [1.0, 2.0] (pollenbee minority class weighted 2x, §2)
+cls_loss_type: vfl
 vfl_alpha: 0.75
 vfl_gamma: 2.0
 vfl_iou_weighted: true
 cls_pos_weight:
   - 1.0
-  - 1.0
+  - 2.0
 
 # Class-balanced weighting via effective number of samples (Cui et al. 2019).
 # Opt-in, default off. When on, per-class weights are computed from the train-set
