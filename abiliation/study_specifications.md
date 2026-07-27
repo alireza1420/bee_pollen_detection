@@ -33,7 +33,9 @@ Any variation here invalidates the table.
 - [ ] Epochs — same fixed count for all ablation rows (100, or 70 if budget-bound)
 - [ ] **Early stopping OFF for all ablation runs**
 - [ ] Optimizer, LR schedule (cosine), warmup, batch size
-- [ ] Augmentation pipeline (mosaic, mixup, HSV, flip — all settings)
+- [ ] Augmentation ON for every run, train split only — HSV jitter
+      (0.015/0.7/0.4) + horizontal flip 0.5. Mosaic/affine OFF for all rows
+      (scale-preserving: object-size statistics stay matched to evaluation)
 - [ ] Seed — single seed **42** for every row (configurable per run via
       `POLLENBEES_SEED`, recorded in the CSV `seed` column)
 - [ ] Checkpoint-selection criterion — pollen-weighted fitness, same for all rows
@@ -48,10 +50,12 @@ Any variation here invalidates the table.
 | CBAM | CBAM on P3–P5 backbone maps | modules removed entirely |
 | BoT | C2f of final backbone stage → BoT hybrid bottlenecks (MHSA + rel. pos.) | standard C2f retained |
 | SAF-SIoU | `saf_*` composite loss (SIoU + NWD gate + WIoU-v3 focusing) | stock **CIoU** |
-| VFL-w | `cls_pos_weight = [1.0, 2.0]` | `cls_pos_weight = [1.0, 1.0]` — **keep VFL**, remove only the weighting |
+| VFL-w | VFL with `cls_pos_weight = [1.0, 2.0]` | stock **BCE** (`cls_loss_type: bce`) |
 
-> Critical: VFL-off means *unweighted VFL*, not a different loss type. Otherwise
-> you confound "minority weighting" with "Varifocal vs BCE".
+> Decision 2026-07-27: the classification component is ablated as one bundle —
+> weighted VFL (ON) vs stock BCE (OFF), so the baseline is stock YOLOv8.
+> Row 4 therefore measures the combined effect of Varifocal loss + minority
+> weighting, not the weighting alone.
 
 ---
 

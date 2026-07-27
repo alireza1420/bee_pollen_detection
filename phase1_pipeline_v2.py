@@ -193,6 +193,20 @@ def convert_split(split_root: str):
 # PART 3 — Dataset Class
 # ===========================================================================
 
+def augment_hsv(img, hsv_h, hsv_s, hsv_v):
+    """In-place HSV jitter (YOLOv5-style) on an RGB uint8 image."""
+    if not (hsv_h or hsv_s or hsv_v):
+        return
+    r = np.random.uniform(-1, 1, 3) * [hsv_h, hsv_s, hsv_v] + 1
+    hue, sat, val = cv2.split(cv2.cvtColor(img, cv2.COLOR_RGB2HSV))
+    x = np.arange(256)
+    lut_h = ((x * r[0]) % 180).astype(np.uint8)
+    lut_s = np.clip(x * r[1], 0, 255).astype(np.uint8)
+    lut_v = np.clip(x * r[2], 0, 255).astype(np.uint8)
+    hsv = cv2.merge((cv2.LUT(hue, lut_h), cv2.LUT(sat, lut_s), cv2.LUT(val, lut_v)))
+    img[:] = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+
+
 class PollenBeeDataset(Dataset):
     """
     Loads images and YOLO-format labels for one split of VnPollenBee.
@@ -209,8 +223,10 @@ class PollenBeeDataset(Dataset):
     empty tensors for those, which the collate_fn handles gracefully.
     """
 
-    def __init__(self, split_root: str, img_size: int = 640):
+    def __init__(self, split_root: str, img_size: int = 640, augment: bool = False, params: dict = None):
         self.img_size = img_size
+        self.augment  = augment
+        self.params   = params or {}
         self.img_dir  = images_dir(split_root)
         self.lbl_dir  = labels_dir(split_root)
 
@@ -270,8 +286,6 @@ class PollenBeeDataset(Dataset):
         # use the simplest possible preprocessing so the baseline is clean.
         # Phase 2 can add letterboxing without changing the architecture.
         img = cv2.resize(img, (self.img_size, self.img_size))
-        img = img.astype(np.float32) / 255.0
-        img = torch.from_numpy(img).permute(2, 0, 1)   # HWC → CHW
 
         # ── Load labels ──────────────────────────────────────────────────
         boxes, classes = [], []
@@ -286,6 +300,23 @@ class PollenBeeDataset(Dataset):
                         cx, cy, w, h = map(float, parts[1:])
                         boxes.append([cx, cy, w, h])
                         classes.append(cls_id)
+
+        # ── Augmentation (train split only): HSV jitter + flips ──────────
+        # Deliberately scale-preserving — no mosaic/affine, so the object-size
+        # statistics the small-object claims rest on stay matched to eval.
+        # Boxes are normalised cxcywh, so a flip is a coordinate reflection.
+        if self.augment:
+            p = self.params
+            augment_hsv(img, p.get('hsv_h', 0.0), p.get('hsv_s', 0.0), p.get('hsv_v', 0.0))
+            if random.random() < p.get('flip_lr', 0.0):
+                img = np.ascontiguousarray(img[:, ::-1])
+                boxes = [[1.0 - cx, cy, w, h] for cx, cy, w, h in boxes]
+            if random.random() < p.get('flip_ud', 0.0):
+                img = np.ascontiguousarray(img[::-1])
+                boxes = [[cx, 1.0 - cy, w, h] for cx, cy, w, h in boxes]
+
+        img = img.astype(np.float32) / 255.0
+        img = torch.from_numpy(img).permute(2, 0, 1)   # HWC → CHW
 
         if boxes:
             boxes_t   = torch.tensor(boxes,   dtype=torch.float32)            # (N, 4)
@@ -831,8 +862,17 @@ def main():
         convert_split(split_root)
 
     # ── Step 2: Build datasets ────────────────────────────────────────────
+    import yaml
+    with open('utils/args.yaml') as f:
+        params = yaml.safe_load(f)
+    log.info(
+        f'Train augmentation: hsv=({params.get("hsv_h", 0)}, {params.get("hsv_s", 0)}, '
+        f'{params.get("hsv_v", 0)})  flip_lr={params.get("flip_lr", 0)}  '
+        f'flip_ud={params.get("flip_ud", 0)}  (mosaic/affine off — scale-preserving)'
+    )
+
     log.info('--- Train split ---')
-    train_ds = PollenBeeDataset(TRAIN_ROOT, img_size=IMG_SIZE)
+    train_ds = PollenBeeDataset(TRAIN_ROOT, img_size=IMG_SIZE, augment=True, params=params)
 
     log.info('--- Val split ---')
     val_ds   = PollenBeeDataset(VAL_ROOT,   img_size=IMG_SIZE)
@@ -862,15 +902,12 @@ def main():
     # Import MyYolo from the file where you saved your notebook code.
     # Make sure Head accepts num_classes=2 (not hardcoded to 80).
     from yolov8_model import MyYolo
-    import yaml
     from utils import util
 
     log.info(f'Model scale: yolov8{VERSION}   Attention mode: {ATTN}')
     model = MyYolo(version=VERSION, num_classes=2, attn=ATTN, img_size=IMG_SIZE).to(DEVICE)
     log.info(f'Parameters: {sum(p.numel() for p in model.parameters())/1e6:.2f}M')
 
-    with open('utils/args.yaml') as f:
-        params = yaml.safe_load(f)
     # Inject per-class GT counts from the TRAIN split so the loss can build
     # effective-number class weights (only used when cls_effective_number is on).
     params['class_counts'] = [train_ds.class_counts.get(i, 0) for i in range(len(CLASS_NAMES))]

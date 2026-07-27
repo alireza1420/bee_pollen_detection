@@ -39,14 +39,17 @@ cls_effective_number_beta: 0.999
 # (reuses the same weights; requires box_loss_type: saf_siou). Default off.
 box_class_coupling: false
 
+# Augmentation (train split only). Scale-preserving transforms ONLY —
+# HSV jitter + flips. Mosaic/affine deliberately off so object-size
+# statistics stay matched to evaluation; the loader ignores the zeroed keys.
 hsv_h: 0.0150000000000
 hsv_s: 0.7000000000000
 hsv_v: 0.4000000000000
 degrees: 0.00000000000
-translate: 0.100000000
-scale: 0.5000000000000
+translate: 0.000000000
+scale: 0.0000000000000
 shear: 0.0000000000000
 flip_ud: 0.00000000000
 flip_lr: 0.50000000000
-mosaic: 1.000000000000
+mosaic: 0.000000000000
 mix_up: 0.000000000000
