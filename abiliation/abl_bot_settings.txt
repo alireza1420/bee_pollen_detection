@@ -88,14 +88,23 @@ python phase1_pipeline_v2.py
 ----------------------------------------------------------------
 RESULTS (fill in after the run)
 ----------------------------------------------------------------
-GPU / runtime         : ................
-Total / best epoch    : ................
-run_id                : ................
-Pollen AP@0.5:0.95    : ................   (primary ranking metric, VAL)
-Pollen AP@0.5         : ................
-Pollen P / R / F1     : ................
-Pollen TP/FP/FN (val) : ................   (MR, FAR)
-Overall mAP@0.5       : ................
-Overall mAP@0.5:0.95  : ................
-Non-pollen F1 (guard) : ................
-Notes                 : ................
+GPU / runtime         : (fill from Colab)
+Total / best epoch    : 100 / 71
+run_id                : 20260727_163332
+Pollen AP@0.5:0.95    : val 0.6856 (ranking) | test 0.6945   (primary ranking metric, VAL)
+Pollen AP@0.5         : val 0.9356 | test (see CSV)
+Pollen P / R / F1     : val 0.9122 / 0.8795 / 0.8955 | test F1 0.9274
+Pollen TP/FP/FN (val) : 270 / 26 / 37   (MR 0.121, FAR 0.088)
+Overall mAP@0.5       : val 0.9616 | test 0.9702-ish (see CSV)
+Overall mAP@0.5:0.95  : val 0.7609
+Non-pollen F1 (guard) : val 0.9836   (majority class not regressed)
+Notes                 : Rank on VAL per §8. Val AP@0.5:0.95 0.6856 = best of
+                        rows 0–2, +0.0136 over baseline — at the EDGE of the §7
+                        noise floor (0.01–0.02), single seed, so promising but
+                        not yet significant. Achieved with FEWER params (22.6M
+                        vs 25.9M): lighter AND higher primary metric.
+                        BoT shifts P/R toward recall (P 0.94->0.91, R 0.86->0.88;
+                        FAR 0.061->0.088). F1@0.5 flat (0.896) — the §8.3 trap,
+                        why we rank on AP not F1. Test AP (0.694) is LOWER than
+                        CBAM's test (0.714) even though BoT leads on val — a live
+                        example of §8.2: never rank on the sealed test set.
