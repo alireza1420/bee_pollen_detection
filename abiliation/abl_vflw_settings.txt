@@ -8,7 +8,7 @@ Purpose  : Weighted VFL alone — measure the isolated effect of the
            Per §2 this row measures VFL + weighting together, not
            the weighting in isolation.
 Branch   : run/abl_vflw
-Commit   : PENDING
+Commit   : 85baa12
 Date     : 2026-07-28
 Seed     : 42
 
