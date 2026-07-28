@@ -7,7 +7,7 @@ Purpose  : Full model — all four components ON together. The
            contribution story. Jumped here ahead of the leave-one-out
            rows 5-8 so the longest, headline run starts early.
 Branch   : run/abl_full
-Commit   : PENDING
+Commit   : 571e213
 Date     : 2026-07-28
 Seed     : 42
 
