@@ -101,14 +101,22 @@ Log must show "Attention mode: none", "Parameters: 25.86M".
 ----------------------------------------------------------------
 RESULTS (fill in after the run)
 ----------------------------------------------------------------
-GPU / runtime         : ................
-Total / best epoch    : ................
-run_id                : ................
-Pollen AP@0.5:0.95    : ................   (primary ranking metric, VAL)
-Pollen AP@0.5         : ................
-Pollen P / R / F1     : ................
-Pollen TP/FP/FN (val) : ................   (MR, FAR)
-Overall mAP@0.5       : ................
-Overall mAP@0.5:0.95  : ................
-Non-pollen F1 (guard) : ................
-Notes                 : ................
+GPU / runtime         : (fill from Colab)
+Total / best epoch    : 100 / 75
+run_id                : 20260727_222006
+Pollen AP@0.5:0.95    : val 0.6806 (ranking) | test 0.7067   (primary ranking metric, VAL)
+Pollen AP@0.5         : val 0.9329 | test (see CSV)
+Pollen P / R / F1     : val 0.9293 / 0.8990 / 0.9139 | test F1 0.9365
+Pollen TP/FP/FN (val) : 276 / 21 / 31   (MR 0.101, FAR 0.071)
+Overall mAP@0.5       : val 0.9601
+Overall mAP@0.5:0.95  : val 0.7630
+Non-pollen F1 (guard) : val 0.9809   (dips from baseline 0.9834 — see note)
+Notes                 : Rank on VAL per §8. Val AP@0.5:0.95 0.6806 = +0.0086
+                        over baseline — below §7 noise floor, single seed.
+                        Most recall-oriented row: recall 0.857->0.899 (highest
+                        of all rows), MR 0.143->0.101, but precision spent
+                        (FAR 0.061->0.071) as expected from 2x minority weight.
+                        GUARDRAIL: non-pollen F1 dips 0.9834->0.9809 — the
+                        majority class pays slightly for upweighting pollenbee.
+                        Small and within noise, but the only row where the
+                        guard class moves the wrong way; watch it in row 9.
