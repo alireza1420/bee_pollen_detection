@@ -103,14 +103,31 @@ Log must show "Attention mode: cbam_botnet" and "Parameters: 22.71M".
 ----------------------------------------------------------------
 RESULTS (fill in after the run)
 ----------------------------------------------------------------
-GPU / runtime         : ................
-Total / best epoch    : ................
-run_id                : ................
-Pollen AP@0.5:0.95    : ................   (VAL for ranking; TEST is reportable)
-Pollen AP@0.5         : ................
-Pollen P / R / F1     : ................
-Pollen TP/FP/FN       : ................   (MR, FAR)
-Overall mAP@0.5       : ................
-Overall mAP@0.5:0.95  : ................
-Non-pollen F1 (guard) : ................   (watch — vflw dipped this)
-Notes                 : ................
+GPU / runtime         : (fill from Colab)
+Total / best epoch    : 100 / 59   (peaks EARLY — earliest of all rows)
+run_id                : 20260728_013920
+Pollen AP@0.5:0.95    : val 0.6595 (ranking) | test 0.6832   ⚠ BOTH below baseline
+Pollen AP@0.5         : val 0.9338 | test 0.9449
+Pollen P / R / F1     : val 0.8849 / 0.8762 / 0.8805 | test 0.8931 / 0.9213 / 0.9070
+Pollen TP/FP/FN (val) : 269 / 35 / 38   (MR 0.124, FAR 0.115)
+Overall mAP@0.5       : val 0.9601
+Overall mAP@0.5:0.95  : val 0.7456 | test 0.7636
+Non-pollen F1 (guard) : val 0.9764 | test 0.9804   ⚠ regresses (baseline 0.9834)
+Notes                 : ⚠ FULL MODEL UNDERPERFORMS BASELINE. Val AP@0.5:0.95
+                        0.6595 = -0.0125 vs baseline 0.672; test AP -0.016.
+                        The four components do NOT stack — combining them
+                        DESTROYS precision: val FAR 0.061->0.115 (nearly 2x),
+                        precision 0.939->0.885. Recall barely up (0.857->0.876),
+                        so F1 falls 0.896->0.881. NP-F1 guard regresses too
+                        (0.983->0.976), worse than vflw alone — the minority
+                        weighting's cost compounds with the other components.
+                        Best epoch 59 (vs 71-87 elsewhere) = early peak, sign
+                        of instability. Single seed, and -0.0125 is at the edge
+                        of the §7 noise floor, BUT the FAR near-doubling and the
+                        guard regression are well outside noise — this reads as
+                        real destructive interference, not variance.
+                        ACTION: (1) leave-one-out rows 5-8 to find which
+                        component drags it down (suspect VFL-w: its FAR cost is
+                        the signature we see amplified here); (2) 3-seed spread
+                        on rows 0 and 9 to confirm. Do NOT report the full model
+                        as the contribution until 5-8 explain this.
