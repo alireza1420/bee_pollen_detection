@@ -14,8 +14,8 @@ cls: 0.500000000000000
 dfl: 1.500000000000000
 
 # Box regression loss: ciou | saf_siou
-# abl_vflw (row 4): box back to stock CIoU (SAF reverted) — this row's delta is on cls
-box_loss_type: ciou
+# abl_full (row 9): SAF-SIoU ON (with VFL-w already on) — full-model loss stack
+box_loss_type: saf_siou
 saf_theta: 4          # Omega exponent in the SIoU shape cost
 saf_C: 12.8           # NWD scale, input-scale pixels
 saf_T: 32.0           # size-gate threshold, input-scale pixels
