@@ -200,11 +200,10 @@ class Backbone(nn.Module):
         else:
             self.p5_block = C2f(p5_channels, p5_channels, num_bottlenecks=int(3 * d), shortcut=shortcut)
 
-        # CBAM on the three feature maps that feed the neck (Identity when disabled,
-        # keeping forward() branch-free). Channels match each stage's output.
-        self.cbam_4 = CBAM(int(256 * w)) if use_cbam else nn.Identity()
-        self.cbam_6 = CBAM(int(512 * w)) if use_cbam else nn.Identity()
-        self.cbam_8 = CBAM(int(512 * w * r)) if use_cbam else nn.Identity()
+        # Single CBAM after the P5 block (the BoT stage when use_botnet), refining the
+        # deepest feature map before SPPF. Identity when disabled, keeping forward()
+        # branch-free.
+        self.cbam_p5 = CBAM(int(512 * w * r)) if use_cbam else nn.Identity()
 
         self.sppf = SPPF(int(512 * w * r), int(512 * w * r))
 
@@ -213,11 +212,11 @@ class Backbone(nn.Module):
         x = self.conv_1(x)
         x = self.c2f_2(x)
         x = self.conv_3(x)
-        out1 = self.cbam_4(self.c2f_4(x))
+        out1 = self.c2f_4(x)
         x = self.conv_5(out1)
-        out2 = self.cbam_6(self.c2f_6(x))
+        out2 = self.c2f_6(x)
         x = self.conv_7(out2)
-        x = self.cbam_8(self.p5_block(x))
+        x = self.cbam_p5(self.p5_block(x))
         out3 = self.sppf(x)
         return out1, out2, out3
 
