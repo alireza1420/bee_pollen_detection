@@ -12,7 +12,7 @@ Purpose  : Full model MINUS CBAM. Leave-one-out row — isolates CBAM's
            and the final model can drop it.
 Branch   : run/abl_no_cbam  (branched from run/abl_full — same code,
            one factor removed)
-Commit   : <recorded below after config commit>
+Commit   : 06ce137
 Date     : 2026-07-31
 Seed     : 42
 
