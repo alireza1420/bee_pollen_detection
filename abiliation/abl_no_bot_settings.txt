@@ -1,0 +1,122 @@
+================================================================
+ABLATION RUN SETTINGS — abl_no_bot (row 6)  [leave-one-out]
+================================================================
+Study    : VnPollenBee ablation (abiliation/study_specifications.md)
+Purpose  : Full model MINUS BoT. Leave-one-out row — isolates BoT's
+           MARGINAL contribution on top of CBAM + SAF-SIoU + VFL-w.
+           Leave-one-in (row 2, abl_bot) showed BoT alone was +0.014
+           AP over baseline (at the edge of the noise floor); this row
+           asks the harder question the leave-one-in cannot: does BoT
+           still add anything once CBAM/SAF/VFL are already present?
+           If AP is unchanged vs abl_full, BoT is redundant in the full
+           stack and the final model can drop it (and keep the stock,
+           faster-to-train P5 C2f).
+Branch   : run/abl_no_bot  (branched from run/abl_full — same code,
+           one factor removed)
+Commit   : <fill after the setup commit>
+Date     : 2026-08-01
+Seed     : 42
+
+----------------------------------------------------------------
+COMPONENTS (protocol §2/§3) — BoT OFF, other three ON
+----------------------------------------------------------------
+CBAM      : ON    (POLLENBEES_ATTN=cbam — CBAM on P3/P4/P5 maps)
+BoT       : OFF   (POLLENBEES_ATTN=cbam — standard C2f retained in
+                   the final backbone stage, no MHSA)
+SAF-SIoU  : ON    (box_loss_type: saf_siou)
+VFL-w     : ON    (cls_loss_type: vfl, cls_pos_weight: [1.0, 2.0])
+
+Config delta vs abl_full (row 9) — EXACTLY ONE factor:
+  env var : POLLENBEES_ATTN cbam_botnet -> cbam   (drop BoT)
+  utils/args.yaml : UNCHANGED (saf_siou + vfl + [1,2] all identical)
+This is a valid one-factor leave-one-out: only BoT changes.
+
+Architecture note: this is the SAME network as abl_cbam (row 1,
+POLLENBEES_ATTN=cbam) — stock YOLOv8m backbone with CBAM, P5 C2f kept.
+The only difference from abl_cbam is the LOSS stack — abl_cbam used
+stock CIoU+BCE, this row uses SAF-SIoU + weighted VFL. So abl_no_bot vs
+abl_cbam also reads as "full losses on the CBAM backbone", but its
+designated role in the matrix is Full - BoT.
+
+----------------------------------------------------------------
+ARCHITECTURE
+----------------------------------------------------------------
+Model            : YOLOv8m (custom re-implementation, MyYolo)
+Classes          : 2 (nonpollenbee=0, pollenbee=1)
+Pretrained       : none — trained from scratch
+Input resolution : 1280 x 1280 (direct resize, no letterboxing)
+Params           : same as abl_cbam (row 1) — stock P5 C2f + CBAM.
+                   HEAVIER than abl_full's 22.71M (BoT's MHSA replaces
+                   the heavier P5 C2f in the full model; here the C2f is
+                   retained). Confirm exact count in the run log
+                   ("Parameters:" line) — must match abl_cbam (row 1),
+                   NOT abl_full's 22.71M and NOT abl_bot's ~22.6M.
+
+----------------------------------------------------------------
+TRAINING (invariants — identical for every ablation row)
+----------------------------------------------------------------
+Epochs           : 100 fixed
+Early stopping   : OFF (POLLENBEES_PATIENCE=0)
+Batch size       : 4
+Optimizer        : SGD, Nesterov, momentum 0.937, weight decay 5e-4
+LR schedule      : 0.01 -> 1e-4, cosine annealing over 100 epochs
+Gradient clip    : max-norm 10
+Loss gains       : box 7.5 / cls 0.5 / dfl 1.5
+
+Augmentation (train split only, scale-preserving):
+  HSV jitter     : h 0.015 / s 0.7 / v 0.4
+  Horizontal flip: p 0.5
+  Vertical flip  : p 0.0
+  Mosaic/affine  : OFF for all rows (object-size statistics must stay
+                   matched to evaluation)
+Val/test         : never augmented
+
+----------------------------------------------------------------
+MODEL SELECTION + EVALUATION
+----------------------------------------------------------------
+best.pt selected : pollen fitness = 0.1*AP@0.5 + 0.9*AP@0.5:0.95,
+                   pollenbee class only, on validation every epoch
+mAP              : torchmetrics, IoU 0.50:0.95, NMS conf 0.001 / IoU 0.70
+P/R/F1 stats     : conf 0.5, IoU 0.5, greedy one-to-one matching
+Ranking metric   : VAL pollen AP@0.5:0.95 (§8 — test stays sealed for
+                   leave-one-out rows; only the final model touches test)
+Outputs          : CSV runs/results/abl_no_bot_<runid>.csv
+                   checkpoints runs/abl_no_bot_<runid>/
+
+----------------------------------------------------------------
+LAUNCH (Colab)
+----------------------------------------------------------------
+git clone -b run/abl_no_bot <repo> ; verify commit above
+
+POLLENBEES_DATA       = /content/pollenbees_dataset
+POLLENBEES_OUT        = /content/drive/MyDrive/Alireza/Bee
+POLLENBEES_WORKERS    = 2
+POLLENBEES_PIN        = 1
+POLLENBEES_ATTN       = cbam
+POLLENBEES_MODEL_NAME = abl_no_bot
+POLLENBEES_PATIENCE   = 0
+python phase1_pipeline_v2.py
+
+Clone sanity — this row must pass ALL FOUR:
+  POLLENBEES_ATTN env               -> cbam   (NOT cbam_botnet, NOT botnet)
+  grep "^box_loss_type" args.yaml   -> saf_siou
+  grep "^cls_loss_type" args.yaml   -> vfl
+  grep -A2 "^cls_pos_weight" ...    -> 1.0 then 2.0
+Log must show "Attention mode: cbam" (CBAM only, no BoT/MHSA) and the
+abl_cbam param count (NOT 22.71M, NOT ~22.6M).
+
+----------------------------------------------------------------
+RESULTS (fill in after the run)
+----------------------------------------------------------------
+GPU / runtime         : ................
+Total / best epoch    : ................
+run_id                : ................
+Pollen AP@0.5:0.95    : ................   (VAL — ranking metric, §8)
+Pollen AP@0.5         : ................
+Pollen P / R / F1     : ................
+Pollen TP/FP/FN       : ................   (MR, FAR)
+Overall mAP@0.5       : ................
+Overall mAP@0.5:0.95  : ................
+Non-pollen F1 (guard) : ................
+Notes                 : compare AP vs abl_full — if within seed noise,
+                        BoT is redundant in the full stack.
