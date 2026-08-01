@@ -15,7 +15,7 @@ Purpose  : Full model MINUS VFL-w. Leave-one-out row — isolates the
            was contributing to the full-model regression.
 Branch   : run/abl_no_vflw  (branched from run/abl_saf-chain; args.yaml
            reset to run/abl_full then the one bundle reverted)
-Commit   : ......   (fill after the setup commit — record run SHA)
+Commit   : 1cf928a
 Date     : 2026-08-02
 Seed     : 42
 
