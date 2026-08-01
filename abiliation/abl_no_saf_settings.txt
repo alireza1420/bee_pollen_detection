@@ -14,7 +14,7 @@ Purpose  : Full model MINUS SAF-SIoU. Leave-one-out row — isolates
            to the stock CIoU box loss.
 Branch   : run/abl_no_saf  (branched from run/abl_full — same network,
            one factor removed)
-Commit   : ......   (fill after the setup commit — record run SHA)
+Commit   : 3302011
 Date     : 2026-08-01
 Seed     : 42
 
