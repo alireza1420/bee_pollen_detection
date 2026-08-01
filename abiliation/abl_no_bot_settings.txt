@@ -108,15 +108,27 @@ abl_cbam param count (NOT 22.71M, NOT ~22.6M).
 ----------------------------------------------------------------
 RESULTS (fill in after the run)
 ----------------------------------------------------------------
-GPU / runtime         : ................
-Total / best epoch    : ................
-run_id                : ................
-Pollen AP@0.5:0.95    : ................   (VAL — ranking metric, §8)
-Pollen AP@0.5         : ................
-Pollen P / R / F1     : ................
-Pollen TP/FP/FN       : ................   (MR, FAR)
-Overall mAP@0.5       : ................
-Overall mAP@0.5:0.95  : ................
-Non-pollen F1 (guard) : ................
-Notes                 : compare AP vs abl_full — if within seed noise,
-                        BoT is redundant in the full stack.
+GPU / runtime         : Colab (GPU not recorded in CSV)
+Total / best epoch    : 100 / 64
+run_id                : 20260801_153008
+                        (VAL @ best epoch = ranking §8 · TEST from sealed row)
+                                          VAL          TEST
+Pollen AP@0.5:0.95    :                  0.684        0.711
+Pollen AP@0.5         :                  0.944        0.950
+Pollen P / R / F1     :        0.811/0.948/0.874   0.816/0.945/0.876
+Pollen TP/FP/FN       :          291/68/16          120/27/7
+  MR = FN/(FN+TP)     :                  0.052        0.055
+  FAR = FP/(TP+FP)    :                  0.189        0.184
+Overall mAP@0.5       :                  0.966        0.969
+Overall mAP@0.5:0.95  :                  0.756        0.774
+Non-pollen F1 (guard) :                  0.975        0.977
+Notes                 : Dropping BoT RAISES val AP to 0.684 — +0.024 over
+                        abl_full (0.660) and +0.012 over baseline (0.672),
+                        the largest recovery of any leave-one-out row. So
+                        BoT is NOT redundant on top of CBAM+SAF+VFL — it is
+                        the leading suspect for the full-model regression;
+                        the final model should drop BoT (keep stock P5 C2f).
+                        Caveat: at conf 0.5 precision is poor (P 0.811, FAR
+                        0.189) with high recall (R 0.948) — F1@0.5 trap,
+                        rank on AP (§5). Confirm with seeds (§7). Test AP
+                        0.711 is the best of the leave-one-out rows.
