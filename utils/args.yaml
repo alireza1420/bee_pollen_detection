@@ -14,9 +14,8 @@ cls: 0.500000000000000
 dfl: 1.500000000000000
 
 # Box regression loss: ciou | saf_siou
-# abl_no_saf (row 7): SAF-SIoU OFF — stock CIoU box loss (VFL-w still on).
-# Leave-one-out Full − SAF-SIoU; saf_* params below are inert while ciou.
-box_loss_type: ciou
+# abl_full (row 9): SAF-SIoU ON (with VFL-w already on) — full-model loss stack
+box_loss_type: saf_siou
 saf_theta: 4          # Omega exponent in the SIoU shape cost
 saf_C: 12.8           # NWD scale, input-scale pixels
 saf_T: 32.0           # size-gate threshold, input-scale pixels
@@ -24,15 +23,18 @@ saf_alpha_f: 1.9      # WIoU-v3 focusing base
 saf_delta: 3.0        # WIoU-v3 focusing delta
 saf_momentum: 0.999   # running-mean momentum for L_reg
 
-# abl_vflw (row 4): weighted Varifocal loss ON — cls_loss_type vfl +
-# cls_pos_weight [1.0, 2.0] (pollenbee minority class weighted 2x, §2)
-cls_loss_type: vfl
+# abl_no_vflw (row 8): VFL-w bundle OFF — stock unweighted BCE (§2).
+# cls_loss_type bce + cls_pos_weight [1.0, 1.0] (no minority weighting),
+# exactly as abl_baseline (row 0). Only delta vs abl_full is this bundle;
+# box stays saf_siou (SAF-SIoU on). NB: pos_weight applies to BCE too
+# (util.py L765-768), so the weight must be reset to 1.0, not just the loss.
+cls_loss_type: bce
 vfl_alpha: 0.75
 vfl_gamma: 2.0
 vfl_iou_weighted: true
 cls_pos_weight:
   - 1.0
-  - 2.0
+  - 1.0
 
 # Class-balanced weighting via effective number of samples (Cui et al. 2019).
 # Opt-in, default off. When on, per-class weights are computed from the train-set
