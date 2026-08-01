@@ -13,7 +13,7 @@ Purpose  : Full model MINUS BoT. Leave-one-out row — isolates BoT's
            faster-to-train P5 C2f).
 Branch   : run/abl_no_bot  (branched from run/abl_full — same code,
            one factor removed)
-Commit   : <fill after the setup commit>
+Commit   : 5b175fb
 Date     : 2026-08-01
 Seed     : 42
 
