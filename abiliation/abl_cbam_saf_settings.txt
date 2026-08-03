@@ -1,0 +1,135 @@
+================================================================
+ABLATION RUN SETTINGS — abl_cbam_saf (row 10)  [candidate final model]
+================================================================
+Study    : VnPollenBee ablation (abiliation/study_specifications.md)
+Purpose  : CBAM + SAF-SIoU only — the two components that each helped
+           WITHOUT trading precision (CBAM row 1, SAF row 3), with the
+           two implicated in the full-model regression DROPPED:
+             - BoT  : leading suspect — Full-BoT (row 6) RAISED val AP
+                      by +0.024, the largest leave-one-out recovery.
+             - VFL-w: precision-wrecker — recall-biased, collapses
+                      conf-0.5 precision (row 6: P 0.811, FAR 0.189).
+           Hypothesis: CBAM+SAF keeps the threshold-free AP while
+           RECOVERING conf-0.5 precision, i.e. a clean detector that
+           competes on Nguyen et al.'s P99/R93/F1 95 (conf-0.5) metric,
+           not just AP. This is a PROPOSED FINAL MODEL, selected post-hoc
+           from ablation evidence — NOT a one-factor ablation row (it is
+           a 2-component combination, so §8.1 does not apply; disclose
+           the post-hoc selection in the paper).
+Branch   : run/abl_cbam_saf  (branched from run/abl_no_vflw @ aa7b15e;
+           committed args.yaml already carries the exact loss config —
+           box saf_siou + bce [1,1] — so this is a docs-only commit and
+           the CBAM-not-BoT choice is the launch env var, see below)
+Commit   : PENDING
+Date     : 2026-08-03
+Seed     : 42
+
+----------------------------------------------------------------
+COMPONENTS (protocol §2/§3) — CBAM + SAF-SIoU ON, BoT + VFL-w OFF
+----------------------------------------------------------------
+CBAM      : ON    (POLLENBEES_ATTN=cbam — CBAM on P3/P4/P5 maps)
+BoT       : OFF   (POLLENBEES_ATTN=cbam — final backbone stage keeps C2f)
+SAF-SIoU  : ON    (utils/args.yaml box_loss_type: saf_siou —
+                   SIoU shape + NWD size gate + WIoU-v3 focusing)
+VFL-w     : OFF   (cls_loss_type: bce, cls_pos_weight: [1.0, 1.0] —
+                   stock unweighted BCE, exactly as abl_baseline row 0)
+
+Config vs the codebase — NO CODE CHANGE. Every path here already ran:
+CBAM alone (row 1) and SAF alone (row 3) each trained successfully;
+this row is their union and introduces no new code path.
+  env var         : POLLENBEES_ATTN cbam   (CBAM on, BoT off)
+  utils/args.yaml : box_loss_type saf_siou  (SAF on — same as row 3)
+                    cls_loss_type bce, cls_pos_weight [1.0, 1.0] (VFL-w off)
+The committed args.yaml is byte-identical to abl_no_vflw (row 8) and to
+abl_saf (row 3); the ONLY thing distinguishing this run is the launch
+env var POLLENBEES_ATTN=cbam. That value is not in the repo, so it MUST
+be set correctly at launch and is recorded here.
+
+SAF hyperparameters (already in args.yaml, active only under saf_siou;
+tuned for 1280 input-scale pixels — do NOT change per §8.1):
+  saf_theta 4  |  saf_C 12.8  |  saf_T 32.0  |
+  saf_alpha_f 1.9  |  saf_delta 3.0  |  saf_momentum 0.999
+  box_class_coupling: false (SAF not coupled to class weights)
+
+----------------------------------------------------------------
+ARCHITECTURE
+----------------------------------------------------------------
+Model            : YOLOv8m (custom re-implementation, MyYolo)
+Classes          : 2 (nonpollenbee=0, pollenbee=1)
+Pretrained       : none — trained from scratch
+Input resolution : 1280 x 1280 (direct resize, no letterboxing)
+Params           : ~25.9M expected (stock 25.86M + CBAM modules; BoT OFF
+                   so no MHSA swap, unlike the 22.71M CBAM+BoT stack).
+                   CONFIRM from the run log "Parameters:" line.
+
+----------------------------------------------------------------
+TRAINING (invariants — identical for every ablation row)
+----------------------------------------------------------------
+Epochs           : 100 fixed
+Early stopping   : OFF (POLLENBEES_PATIENCE=0)
+Batch size       : 4
+Optimizer        : SGD, Nesterov, momentum 0.937, weight decay 5e-4
+LR schedule      : 0.01 -> 1e-4, cosine annealing over 100 epochs
+Gradient clip    : max-norm 10
+Loss gains       : box 7.5 / cls 0.5 / dfl 1.5
+
+Augmentation (train split only, scale-preserving):
+  HSV jitter     : h 0.015 / s 0.7 / v 0.4
+  Horizontal flip: p 0.5
+  Vertical flip  : p 0.0
+  Mosaic/affine  : OFF for all rows (object-size statistics must stay
+                   matched to evaluation)
+Val/test         : never augmented
+
+----------------------------------------------------------------
+MODEL SELECTION + EVALUATION
+----------------------------------------------------------------
+best.pt selected : pollen fitness = 0.1*AP@0.5 + 0.9*AP@0.5:0.95,
+                   pollenbee class only, on validation every epoch
+mAP              : torchmetrics, IoU 0.50:0.95, NMS conf 0.001 / IoU 0.70
+P/R/F1 stats     : conf 0.5, IoU 0.5, greedy one-to-one matching
+Ranking metric   : VAL pollen AP@0.5:0.95 (§8). Test STAYS SEALED — this
+                   is a candidate; only the single chosen final model
+                   touches the test set, once (§8.2). Do NOT test-evaluate
+                   every 2-component subset (multiple-comparison leakage).
+Outputs          : CSV runs/results/abl_cbam_saf_<runid>.csv
+                   checkpoints runs/abl_cbam_saf_<runid>/
+
+----------------------------------------------------------------
+LAUNCH (Colab)
+----------------------------------------------------------------
+git clone -b run/abl_cbam_saf <repo> ; verify commit above
+
+POLLENBEES_DATA       = /content/pollenbees_dataset
+POLLENBEES_OUT        = /content/drive/MyDrive/Alireza/Bee
+POLLENBEES_WORKERS    = 2
+POLLENBEES_PIN        = 1
+POLLENBEES_ATTN       = cbam
+POLLENBEES_MODEL_NAME = abl_cbam_saf
+POLLENBEES_PATIENCE   = 0
+python phase1_pipeline_v2.py
+
+Clone sanity — this row must pass ALL FOUR:
+  POLLENBEES_ATTN env               -> cbam        (CBAM on, BoT OFF)
+  grep "^box_loss_type" args.yaml   -> saf_siou    (SAF-SIoU ON)
+  grep "^cls_loss_type" args.yaml   -> bce          (VFL-w OFF — NOT vfl)
+  grep -A2 "^cls_pos_weight" ...    -> 1.0 then 1.0 (weighting OFF — NOT 2.0/4.0)
+Log must show "Attention mode: cbam" (NOT cbam_botnet) and ~25.9M params
+(CBAM present, BoT absent).
+
+----------------------------------------------------------------
+RESULTS (fill in after the run)
+----------------------------------------------------------------
+GPU / runtime         : ................
+Total / best epoch    : ................
+run_id                : ................
+Pollen AP@0.5:0.95    : ................   (VAL — ranking metric, §8)
+Pollen AP@0.5         : ................
+Pollen P / R / F1     : ................
+Pollen TP/FP/FN       : ................   (MR, FAR)
+Overall mAP@0.5       : ................
+Non-pollen F1 (guard) : ................
+Notes                 : compare val AP + conf-0.5 precision vs abl_no_bot
+                        (row 6, CBAM+SAF+VFL-w). If AP holds and FAR drops
+                        sharply, dropping VFL-w recovered precision without
+                        costing AP -> this is the final-model candidate.

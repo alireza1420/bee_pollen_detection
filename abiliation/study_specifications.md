@@ -75,10 +75,23 @@ Base model: **YOLOv8m** (§0) · Resolution 1280 · Fixed epochs · No early sto
 | 7 | `abl_no_saf` | ✓ | ✓ | – | ✓ | Full − SAF-SIoU | ☐ |
 | 8 | `abl_no_vflw` | ✓ | ✓ | ✓ | – | Full − weighting | ☐ |
 | 9 | `abl_full` | ✓ | ✓ | ✓ | ✓ | **Full model** | ☐ |
+| 10 | `abl_cbam_saf` | ✓ | – | ✓ | – | **Candidate final model** (post-hoc) | ☐ |
 
 **Minimum publishable subset if compute-bound:** rows 0–4 and 9 (six runs).
 Rows 5–8 (leave-one-out) reveal redundancy that leave-one-in cannot — e.g. a module
 that helps alone but adds nothing on top of the others.
+
+**Row 10 is a post-hoc addition (2026-08-03), not part of the pre-registered
+factorial design.** It is a 2-component combination, so the one-factor rule (§8.1)
+does not apply to it — it is a *proposed final model*, not an ablation contrast.
+Motivation from rows 0–9: the pre-registered full model (row 9) *regressed* vs
+baseline; the leave-one-out rows localized the cause to **BoT** (row 6, Full−BoT,
+raised val AP +0.024 — the largest recovery) and to **VFL-w**'s conf-0.5 precision
+collapse (row 6: P 0.811, FAR 0.189). `abl_cbam_saf` keeps only the two
+precision-clean components (CBAM row 1, SAF row 3) and drops both suspects. Report
+it as a model selected from ablation evidence; **rank on validation and keep the
+test set sealed** until one final model is committed (§8.2) — do not test-evaluate
+every candidate subset (multiple-comparison leakage).
 
 ---
 
