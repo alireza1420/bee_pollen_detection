@@ -20,7 +20,7 @@ Branch   : run/abl_cbam_saf  (branched from run/abl_no_vflw @ aa7b15e;
            committed args.yaml already carries the exact loss config —
            box saf_siou + bce [1,1] — so this is a docs-only commit and
            the CBAM-not-BoT choice is the launch env var, see below)
-Commit   : PENDING
+Commit   : f2a2fca
 Date     : 2026-08-03
 Seed     : 42
 
